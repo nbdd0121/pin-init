@@ -26,8 +26,8 @@ struct Bound<T: Clone> {
 }
 
 #[pin_init]
-struct MoreBounds<'a: 'static, T> {
-    t: PhantomData<&'a T>,
+struct MoreBounds<'a, 'b: 'a, T> {
+    t: PhantomData<&'b &'a T>,
 }
 
 #[pin_init]
@@ -44,4 +44,9 @@ where
     T: Clone,
 {
     t: PhantomData<&'a T>,
+}
+
+#[pin_init]
+struct Unsized<T: ?Sized> {
+    t: T,
 }

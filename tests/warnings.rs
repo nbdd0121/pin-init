@@ -11,4 +11,6 @@ use std::marker::PhantomData;
 #[allow(dead_code)]
 struct Test<'WRONG_LIFETIME_NAME, wrong_type_name, const wrong_const_name: bool> {
     WrongVariableName: PhantomData<&'WRONG_LIFETIME_NAME wrong_type_name>,
+    #[pin]
+    WrongVariableName2: PhantomData<&'WRONG_LIFETIME_NAME wrong_type_name>,
 }

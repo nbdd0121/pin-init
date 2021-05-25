@@ -2,7 +2,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::{
     punctuated::Punctuated, Data, DeriveInput, Error, Fields, GenericParam, Generics, ItemStruct,
-    LifetimeDef, Member, Result,
+    LifetimeDef, Member, Result, TraitBound, TraitBoundModifier, TypeParamBound,
 };
 
 pub fn pin_init_attr(_attr: TokenStream, input: TokenStream) -> Result<TokenStream> {
@@ -84,7 +84,22 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
         .map(|mut x| {
             match &mut x {
                 GenericParam::Lifetime(_) => (),
-                GenericParam::Type(t) => t.default = None,
+                GenericParam::Type(t) => {
+                    t.default = None;
+
+                    // Need to remove ?Sized bound.
+                    let bounds = std::mem::replace(&mut t.bounds, Punctuated::new());
+                    t.bounds = bounds
+                        .into_iter()
+                        .filter(|b| match b {
+                            TypeParamBound::Trait(TraitBound {
+                                modifier: TraitBoundModifier::Maybe(_),
+                                ..
+                            }) => false,
+                            _ => true,
+                        })
+                        .collect();
+                }
                 GenericParam::Const(c) => c.default = None,
             }
             x
@@ -305,7 +320,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                 #typestate_ty_post
             > #where_clause {
                 #[inline]
-                fn __init_ok(mut self) -> ::pin_init::PinInitOk<#this_lifetime, #ident<#(#ty_generics),*>>{
+                pub fn __init_ok(mut self) -> ::pin_init::PinInitOk<#this_lifetime, #ident<#(#ty_generics),*>>{
                     unsafe { self.ptr.init_ok() }
                 }
             }
