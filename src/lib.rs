@@ -643,6 +643,27 @@ macro_rules! init_stack {
 /// # }
 /// ```
 ///
+/// If you want to define a cosntructor, you can write like this:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// # #[pin_init]
+/// # struct ManyPin {
+/// #     #[pin]
+/// #     a: NeedPin,
+/// #     b: usize,
+/// # }
+/// impl ManyPin {
+///     pub fn new(this: PinInit<'_, Self>) -> PinInitResult<'_, Infallible> {
+///         init_pin!(ManyPin {
+///             a: NeedPin::new,
+///             b: 1,
+///         })(this)
+///     }
+/// }
+/// # }
+///
+/// ```
 #[macro_export]
 macro_rules! init_pin {
     // try Error => Struct {}

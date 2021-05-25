@@ -15,6 +15,9 @@ members = ["pin-init-internal"]
 [dependencies]
 pin-init-internal = { version = "=0.1.0",  path = "pin-init-internal" }
 
+[dev-dependencies]
+libc = "0.2"
+
 [features]
 alloc = []
 default = ["alloc"]
