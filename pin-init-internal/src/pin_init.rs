@@ -1,8 +1,8 @@
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote, quote_spanned};
+use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::{
-    punctuated::Punctuated, Data, DeriveInput, Error, Fields, Generics, ItemStruct, LifetimeDef,
-    Member, Result,
+    punctuated::Punctuated, Data, DeriveInput, Error, Fields, GenericParam, Generics, ItemStruct,
+    LifetimeDef, Member, Result,
 };
 
 pub fn pin_init_attr(_attr: TokenStream, input: TokenStream) -> Result<TokenStream> {
@@ -79,7 +79,27 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
         where_clause,
         ..
     } = generics;
-    let generics: Vec<_> = generics.iter().collect();
+    let generics: Vec<_> = generics
+        .into_iter()
+        .map(|mut x| {
+            match &mut x {
+                GenericParam::Lifetime(_) => (),
+                GenericParam::Type(t) => t.default = None,
+                GenericParam::Const(c) => c.default = None,
+            }
+            x
+        })
+        .collect();
+    let ty_generics: Vec<_> = generics
+        .iter()
+        .map(|x| -> &dyn ToTokens {
+            match x {
+                GenericParam::Lifetime(l) => &l.lifetime,
+                GenericParam::Type(t) => &t.ident,
+                GenericParam::Const(c) => &c.ident,
+            }
+        })
+        .collect();
 
     // Create identifier names that are unlikely to be used.
     let typestate_name: Vec<_> = field_name
@@ -137,21 +157,23 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
         builder.push(quote_spanned! {mixed_site=>
             #[doc(hidden)]
             #[repr(transparent)]
+            #[allow(nonstandard_style)]
             #vis struct #builder_ident<
                 #this_lifetime
                 #(,#generics)*
                 #typestate_impl
             > #where_clause {
-                ptr: ::pin_init::PinInit<#this_lifetime, #ident<#(#generics),*>>,
+                ptr: ::pin_init::PinInit<#this_lifetime, #ident<#(#ty_generics),*>>,
             }
 
+            #[allow(nonstandard_style)]
             impl<
                 #this_lifetime
                 #(,#generics)*
                 #typestate_impl
             > #builder_ident <
                 #this_lifetime
-                #(,#generics)*
+                #(,#ty_generics)*
                 #typestate_ty
             > #where_clause {
                 #[inline]
@@ -204,7 +226,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
             quote_spanned! {mixed_site=>
                 #field_vis fn #fn_name<#error_ident, #fn_ident>(mut self, f: #fn_ident) -> ::core::result::Result<#builder_ident<
                     #this_lifetime
-                    #(,#generics)*
+                    #(,#ty_generics)*
                     #typestate_ty_post
                 >, ::pin_init::PinInitErr<#this_lifetime, #error_ident>>
                     where #fn_ident: for<'__a> ::core::ops::FnOnce(::pin_init::PinInit<'__a, #ty>) -> ::pin_init::PinInitResult<'__a, #ty, #error_ident>
@@ -225,7 +247,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
             quote_spanned! {mixed_site=>
                 #field_vis fn #fn_name<#error_ident>(mut self, f: #ty) -> ::core::result::Result<#builder_ident<
                     #this_lifetime
-                    #(,#generics)*
+                    #(,#ty_generics)*
                     #typestate_ty_post
                 >, ::pin_init::PinInitErr<#this_lifetime, #error_ident>>
                 {
@@ -239,13 +261,14 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
             }
         };
         builder.push(quote_spanned! {mixed_site=>
+            #[allow(nonstandard_style)]
             impl<
                 #this_lifetime
                 #(,#generics)*
                 #typestate_impl
             > #builder_ident <
                 #this_lifetime
-                #(,#generics)*
+                #(,#ty_generics)*
                 #typestate_ty_pre
             > #where_clause {
                 #[inline]
@@ -272,27 +295,29 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
         };
 
         builder.push(quote_spanned! {mixed_site=>
+            #[allow(nonstandard_style)]
             impl<
                 #this_lifetime
                 #(,#generics)*
             > #builder_ident <
                 #this_lifetime
-                #(,#generics)*
+                #(,#ty_generics)*
                 #typestate_ty_post
             > #where_clause {
                 #[inline]
-                fn __init_ok(mut self) -> ::pin_init::PinInitOk<#this_lifetime, #ident<#(#generics),*>>{
+                fn __init_ok(mut self) -> ::pin_init::PinInitOk<#this_lifetime, #ident<#(#ty_generics),*>>{
                     unsafe { self.ptr.init_ok() }
                 }
             }
 
+            #[allow(nonstandard_style)]
             impl<
                 #this_lifetime
                 #(,#generics)*
-            > ::pin_init::__private::PinInitBuildable<#this_lifetime> for #ident<#(#generics),*> #where_clause {
+            > ::pin_init::__private::PinInitBuildable<#this_lifetime> for #ident<#(#ty_generics),*> #where_clause {
                 type Builder = #builder_ident <
                     #this_lifetime
-                    #(,#generics)*
+                    #(,#ty_generics)*
                     #typestate_ty_pre
                 >;
 
@@ -301,7 +326,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                     this: ::pin_init::PinInit<#this_lifetime, Self>,
                 ) -> #builder_ident <
                     #this_lifetime
-                    #(,#generics)*
+                    #(,#ty_generics)*
                     #typestate_ty_pre
                 > {
                     #builder_ident { ptr: this }
