@@ -1,12 +1,13 @@
 use pin_init::*;
+use pin_project::pin_project;
 
-use std::io::Error;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::{
     cell::UnsafeCell,
     ops::{Deref, DerefMut},
 };
+use std::{io::Error, marker::PhantomPinned};
 
 #[repr(transparent)]
 struct RawMutex {
@@ -128,6 +129,21 @@ impl<T> Mutex<T> {
     }
 }
 
+// Can be used on tuple structs.
+// Can be used together with pin_project.
+#[pin_init]
+#[pin_project]
+struct Pinned<T>(T, #[pin] PhantomPinned);
+
+#[pin_init]
+#[pin_project]
+struct TwoMutex {
+    #[pin]
+    a: Mutex<i32>,
+    #[pin]
+    b: Mutex<Pinned<i32>>,
+}
+
 fn main() {
     {
         let m = new_box(|s| Mutex::new_with_value(s, 1)).unwrap();
@@ -139,14 +155,23 @@ fn main() {
     }
 
     {
-        // Even complete, nested pinned data structure can be safely
+        // Even complex, nested pinned data structure can be safely
         // created and initialized on the stack.
-        init_stack!(m = |s| Mutex::new(s, |s| Mutex::new_with_value(s, 1)));
-        let m = m.unwrap();
-        println!("{}", *m.lock().as_mut().get_inner());
-        *m.lock().lock() = 2;
-        println!("{}", *m.lock().lock());
-        *m.lock().as_mut().get_inner() = 3;
-        println!("{}", *m.lock().as_mut().get_inner());
+        init_stack!(
+            m = init_pin!(TwoMutex {
+                a: |s| Mutex::new_with_value(s, 1),
+                b: |s| Mutex::new(s, init_pin!(Pinned(1, init_pin!(PhantomPinned))))
+            })
+        );
+        let mut m = m.unwrap();
+
+        println!("{}", *m.a.lock());
+        *m.a.lock() = 2;
+        // Use pin-projection to access unpinned fields
+        *m.b.lock().as_mut().project().0 = 2;
+        println!("{}", m.b.lock().0);
+        // Use pin-projection to access pinned fields.
+        *m.as_mut().project().b.get_inner().project().0 = 3;
+        println!("{}", m.b.lock().0);
     }
 }

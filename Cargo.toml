@@ -17,6 +17,7 @@ pin-init-internal = { version = "=0.1.0",  path = "pin-init-internal" }
 
 [dev-dependencies]
 libc = "0.2"
+pin-project = "1"
 
 [features]
 alloc = []
