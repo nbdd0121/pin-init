@@ -2,7 +2,7 @@
 #![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-//! Safe Safe pinned-initialization in Rust.
+//! Safe pinned-initialization in Rust.
 //!
 //! # The problem
 //! Rust's `Pin` provides sufficient guarantee for C interop and self-referential

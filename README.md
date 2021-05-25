@@ -1,6 +1,6 @@
 # pin_init
 
-Safe Safe pinned-initialization in Rust.
+Safe pinned-initialization in Rust.
 
 ## The problem
 
