@@ -147,6 +147,13 @@
 //! [`new_rc`] and [`new_arc`] are provided which create [`UniqueRc`] and [`UniqueArc`]
 //! internally, pin-initialize it with given constructor, and convert them to the shareable form.
 //!
+//! This crate allows safe initialization of pinned data structure.
+//! [`pin-project`](https://docs.rs/pin-project) can be used to safely access these structs. You can
+//! use both `#[pin_init]` and `#[pin_project]` together with your struct, they even share the same
+//! `#[pin]` field attribute!
+//!
+//! See [examples](https://github.com/nbdd0121/pin-init/tree/trunk/examples) for some non-artifical examples.
+//!
 //! [`UniqueRc`]: struct.UniqueRc.html
 //! [`UniqueArc`]: struct.UniqueArc.html
 //! [`new_rc`]: fn.new_rc.html

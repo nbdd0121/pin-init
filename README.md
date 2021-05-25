@@ -126,3 +126,10 @@ This crate also provides a `UniqueRc` and `UniqueArc`, inspired from servo_arc.
 They can be used to mutably initialize `Rc` and `Arc` before they are being shared.
 `new_rc` and `new_arc` are provided which create `UniqueRc` and `UniqueArc`
 internally, pin-initialize it with given constructor, and convert them to the shareable form.
+
+This crate allows safe initialization of pinned data structure.
+[`pin-project`](https://github.com/taiki-e/pin-project) can be used to safely access these structs. You can
+use both `#[pin_init]` and `#[pin_project]` together with your struct, they even share the same
+`#[pin]` field attribute!
+
+See [examples](examples) for some non-artifical examples.
