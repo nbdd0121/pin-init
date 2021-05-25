@@ -331,21 +331,19 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
             impl<
                 #this_lifetime
                 #(,#generics)*
-            > ::pin_init::__private::PinInitBuildable<#this_lifetime> for #ident<#(#ty_generics),*> #where_clause {
-                type Builder = #builder_ident <
+            > ::pin_init::PinInitable<#this_lifetime> for #ident<#(#ty_generics),*> #where_clause {
+                #[doc(hidden)]
+                type __PinInitBuilder = #builder_ident <
                     #this_lifetime
                     #(,#ty_generics)*
                     #typestate_ty_pre
                 >;
 
+                #[doc(hidden)]
                 #[inline]
-                fn __builder(
+                fn __pin_init_builder(
                     this: ::pin_init::PinInit<#this_lifetime, Self>,
-                ) -> #builder_ident <
-                    #this_lifetime
-                    #(,#ty_generics)*
-                    #typestate_ty_pre
-                > {
+                ) -> Self::__PinInitBuilder {
                     #builder_ident { ptr: this }
                 }
             }

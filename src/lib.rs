@@ -524,6 +524,22 @@ where
     Ok(UniqueArc::shareable_pin(new_unique_arc(f)?))
 }
 
+/// Types that can be constructed using `init_pin`.
+///
+/// This trait is not meant for manual implementation and consumption.
+/// You should use [`#[pin_init]`](pin_init) attribute to implement this trait, and
+/// [`init_pin!`] macro to use.
+///
+/// This trait is implemented on some std types so they can also be constructed
+/// using `init_pin!`.
+pub trait PinInitable<'this>: Sized {
+    #[doc(hidden)]
+    type __PinInitBuilder;
+
+    #[doc(hidden)]
+    fn __pin_init_builder(init: PinInit<'this, Self>) -> Self::__PinInitBuilder;
+}
+
 #[doc(hidden)]
 pub mod __private {
     use super::*;
@@ -554,15 +570,6 @@ pub mod __private {
         }
     }
 
-    // Used by the `init_pin` macro and implemented by `pin_init` macro.
-    // We also provide a few manual implementation for nullary and unary
-    // std types.
-    pub trait PinInitBuildable<'this>: Sized {
-        type Builder;
-
-        fn __builder(init: PinInit<'this, Self>) -> Self::Builder;
-    }
-
     pub struct ValueBuilder<'this, T>(PinInitOk<'this, T>);
 
     impl<'this, T> ValueBuilder<'this, T> {
@@ -573,31 +580,37 @@ pub mod __private {
     }
 
     // pin-project users may want a #[pin] PhantomPinned
-    impl<'this> PinInitBuildable<'this> for core::marker::PhantomPinned {
-        type Builder = ValueBuilder<'this, Self>;
+    impl<'this> PinInitable<'this> for core::marker::PhantomPinned {
+        #[doc(hidden)]
+        type __PinInitBuilder = ValueBuilder<'this, Self>;
 
+        #[doc(hidden)]
         #[inline]
-        fn __builder(init: PinInit<'this, Self>) -> Self::Builder {
+        fn __pin_init_builder(init: PinInit<'this, Self>) -> Self::__PinInitBuilder {
             ValueBuilder(init.init_with_value(Self))
         }
     }
 
     pub struct TransparentBuilder<'this, T, W>(PinInit<'this, W>, PhantomData<PinInit<'this, T>>);
 
-    impl<'this, T> PinInitBuildable<'this> for core::cell::UnsafeCell<T> {
-        type Builder = TransparentBuilder<'this, T, core::cell::UnsafeCell<T>>;
+    impl<'this, T> PinInitable<'this> for core::cell::UnsafeCell<T> {
+        #[doc(hidden)]
+        type __PinInitBuilder = TransparentBuilder<'this, T, core::cell::UnsafeCell<T>>;
 
+        #[doc(hidden)]
         #[inline]
-        fn __builder(init: PinInit<'this, Self>) -> Self::Builder {
+        fn __pin_init_builder(init: PinInit<'this, Self>) -> Self::__PinInitBuilder {
             TransparentBuilder(init, PhantomData)
         }
     }
 
-    impl<'this, T> PinInitBuildable<'this> for core::cell::Cell<T> {
-        type Builder = TransparentBuilder<'this, T, core::cell::Cell<T>>;
+    impl<'this, T> PinInitable<'this> for core::cell::Cell<T> {
+        #[doc(hidden)]
+        type __PinInitBuilder = TransparentBuilder<'this, T, core::cell::Cell<T>>;
 
+        #[doc(hidden)]
         #[inline]
-        fn __builder(init: PinInit<'this, Self>) -> Self::Builder {
+        fn __pin_init_builder(init: PinInit<'this, Self>) -> Self::__PinInitBuilder {
             TransparentBuilder(init, PhantomData)
         }
     }
@@ -785,8 +798,8 @@ macro_rules! init_pin {
     // try Error => Struct {}
     (try $err:ty => $ty:ident { $($tt:tt)* }) => {{
         |this| -> $crate::PinInitResult<'_, _, $err> {
-            use $crate::__private::PinInitBuildable;
-            let builder = $ty::__builder(this);
+            use $crate::PinInitable;
+            let builder = $ty::__pin_init_builder(this);
             $crate::__init_pin_internal!(@named builder => $($tt)*,);
             Ok(builder.__init_ok())
         }
@@ -794,8 +807,8 @@ macro_rules! init_pin {
     // try Error => Struct()
     (try $err:ty => $ty:ident ( $($tt:tt)* )) => {{
         |this| -> $crate::PinInitResult<'_, _, $err> {
-            use $crate::__private::PinInitBuildable;
-            let builder = $ty::__builder(this);
+            use $crate::PinInitable;
+            let builder = $ty::__pin_init_builder(this);
             $crate::__init_pin_internal!(@unnamed builder => $($tt)*,);
             Ok(builder.__init_ok())
         }
@@ -803,8 +816,8 @@ macro_rules! init_pin {
     // try Error => Struct
     (try $err:ty => $ty:ident) => {{
         |this| -> $crate::PinInitResult<'_, _, $err> {
-            use $crate::__private::PinInitBuildable;
-            let builder = $ty::__builder(this);
+            use $crate::PinInitable;
+            let builder = $ty::__pin_init_builder(this);
             Ok(builder.__init_ok())
         }
     }};
@@ -812,8 +825,8 @@ macro_rules! init_pin {
     // Struct {}
     ($ty:ident { $($tt:tt)* }) => {{
         |this| {
-            use $crate::__private::PinInitBuildable;
-            let builder = $ty::__builder(this);
+            use $crate::PinInitable;
+            let builder = $ty::__pin_init_builder(this);
             $crate::__init_pin_internal!(@named builder => $($tt)*,);
             Ok(builder.__init_ok())
         }
@@ -821,8 +834,8 @@ macro_rules! init_pin {
     // Struct()
     ($ty:ident ( $($tt:tt)* )) => {{
         |this| {
-            use $crate::__private::PinInitBuildable;
-            let builder = $ty::__builder(this);
+            use $crate::PinInitable;
+            let builder = $ty::__pin_init_builder(this);
             $crate::__init_pin_internal!(@unnamed builder => $($tt)*,);
             Ok(builder.__init_ok())
         }
@@ -830,8 +843,8 @@ macro_rules! init_pin {
     // Struct
     ($ty:ident) => {{
         |this| {
-            use $crate::__private::PinInitBuildable;
-            let builder = $ty::__builder(this);
+            use $crate::PinInitable;
+            let builder = $ty::__pin_init_builder(this);
             Ok(builder.__init_ok())
         }
     }};
