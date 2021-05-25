@@ -16,8 +16,9 @@
 //! `pthread_mutex_t`, it is expected to be pinned from the start.
 //!
 //! For demonstration purpose, we will use this type `NeedPin`:
-//! ```
-//! # use core::marker::PhantomPinned;
+//! ```no_run
+//! # use std::marker::PhantomPinned;
+//! # use std::ptr;
 //! struct NeedPin {
 //! 	// Must points to itself
 //!     address: *const NeedPin,
@@ -37,9 +38,11 @@
 //! }
 //! ```
 //!
-//! One could separate creating and initialization:
-//! ```
+//! One could separate creating and initialization (Infallible is used as a
+//! placeholder here but in reality it can fail):
+//! ```no_run
 //! # include!("doctest.rs");
+//! # fn main() {}
 //! impl NeedPin {
 //!     unsafe fn uninit() -> Self {
 //!         Self {
@@ -48,9 +51,10 @@
 //!         }
 //!     }
 //!
-//!     unsafe fn init(self: Pin<&mut Self>) -> Result<(), Error> {
+//!     unsafe fn init(self: Pin<&mut Self>) -> Result<(), Infallible> {
 //!         let this = unsafe { self.get_unchecked_mut() };
 //!         this.address = this;
+//!         Ok(())
 //!     }
 //! }
 //! ```
@@ -76,13 +80,18 @@
 //! `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, Err>`.
 //!
 //! `NeedPin::new` could be define like this:
-//! ```
+//! ```no_run
 //! # use pin_init::*;
 //! # use std::convert::Infallible;
+//! # use std::ptr;
+//! # struct NeedPin {
+//! #     address: *const NeedPin,
+//! #     _pinned: std::marker::PhantomPinned,
+//! # }
 //! impl NeedPin {
 //!     pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Infallible> {
 //!         let v = this.get_mut().as_mut_ptr();
-//!         unsafe { *core::ptr::addr_of_mut!((*v).address) = v };
+//!         unsafe { *ptr::addr_of_mut!((*v).address) = v };
 //!         Ok(unsafe { this.init_ok() })
 //!     }
 //! }
@@ -93,11 +102,13 @@
 //! `NeedPin` can now be easily initialized:
 //! ```
 //! # include!("doctest.rs");
+//! # fn main() {
 //! // In a box
-//! let p: Box<Pin<NeedPin>> = pin_init::new_box(NeedPin::new).unwrap();
+//! let p: Pin<Box<NeedPin>> = pin_init::new_box(NeedPin::new).unwrap();
 //! // On the stack
 //! init_stack!(p = NeedPin::new);
 //! let p: Pin<&mut NeedPin> = p.unwrap();
+//! # }
 //! ```
 //!
 //! For structs, if [`#[pin_init]`](pin_init) when defining the struct, then
@@ -107,14 +118,14 @@
 //! ```
 //! # include!("doctest.rs");
 //! # fn main() {
-//! [pin_init]
-//!  struct ManyPin {
-//!      #[pin]
-//!      a: NeedPin,
-//!      b: usize,
+//! #[pin_init]
+//! struct ManyPin {
+//!     #[pin]
+//!     a: NeedPin,
+//!     b: usize,
 //! }
 //!
-//! [pin_init]
+//! #[pin_init]
 //! struct TooManyPin {
 //!     #[pin]
 //!     a: NeedPin,
@@ -148,7 +159,7 @@ mod unique;
 /// or not. Tagged fields are pin-initialized, and untaged fields are initialized
 /// by value like they do in normal struct expression.
 ///
-/// ```
+/// ```no_run
 /// # include!("doctest.rs");
 /// #[pin_init]
 /// struct ManyPin {
@@ -160,7 +171,7 @@ mod unique;
 /// ```
 ///
 /// Also works for tuple-structs:
-/// ```
+/// ```no_run
 /// # include!("doctest.rs");
 /// #[pin_init]
 /// struct ManyPin(#[pin] NeedPin, usize);
@@ -168,7 +179,7 @@ mod unique;
 /// ```
 ///
 /// You could apply it to unit-structs (but probably not very useful):
-/// ```
+/// ```no_run
 /// # include!("doctest.rs");
 /// #[pin_init]
 /// struct NoPin;
