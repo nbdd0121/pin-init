@@ -16,7 +16,6 @@ mod unique;
 /// by value like they do in normal struct expression.
 ///
 /// ```
-/// # use pin_init::*;
 /// # include!("doctest.rs");
 /// #[pin_init]
 /// struct ManyPin {
@@ -29,16 +28,14 @@ mod unique;
 ///
 /// Also works for tuple-structs:
 /// ```
-/// # use pin_init::*;
 /// # include!("doctest.rs");
 /// #[pin_init]
 /// struct ManyPin(#[pin] NeedPin, usize);
 /// # fn main() {}
 /// ```
 ///
-/// You could apply it to unit-structs (but probably not very useful)
+/// You could apply it to unit-structs (but probably not very useful):
 /// ```
-/// # use pin_init::*;
 /// # include!("doctest.rs");
 /// #[pin_init]
 /// struct NoPin;
@@ -366,6 +363,31 @@ pub mod __private {
 }
 
 /// Create and pin-initialize a new variable on the stack.
+///
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// init_stack!(p = NeedPin::new);
+/// // Now `p` is a `Result<Pin<&mut NeedPin>, Infallible>`.
+/// # }
+/// ```
+/// 
+/// Can be used together with [`init_pin!`]:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// struct ManyPin {
+///     #[pin]
+///     a: NeedPin,
+///     b: usize,
+/// }
+/// init_stack!(p = init_pin!(ManyPin {
+///     a: NeedPin::new,
+///     b: 0,
+/// }));
+/// # }
+/// ```
 #[macro_export]
 macro_rules! init_stack {
     ($var:ident = $init:expr) => {
@@ -375,7 +397,7 @@ macro_rules! init_stack {
             $init,
         ) {
             Ok(_) => {
-                Ok(unsafe { Pin::new_unchecked($crate::__private::assume_init_mut(&mut storage)) })
+                Ok(unsafe { ::core::pin::Pin::new_unchecked($crate::__private::assume_init_mut(&mut storage)) })
             }
             Err(err) => Err(err.into_inner()),
         };
@@ -383,55 +405,183 @@ macro_rules! init_stack {
 }
 
 /// Create and pin-initialize a struct.
+///
+/// The type to create need to be marked with [`#[pin_init]`](pin_init).
+///
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// struct ManyPin {
+///     #[pin]
+///     a: NeedPin,
+///     b: usize,
+/// }
+/// let p = new_box(init_pin!(ManyPin {
+///     a: NeedPin::new,
+///     b: 0,
+/// }));
+/// # }
+/// ```
+///
+/// Also works for tuple-structs:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// struct ManyPin(#[pin] NeedPin, usize);
+/// let p = new_box(init_pin!(ManyPin(
+///     NeedPin::new,
+///     0,
+/// )));
+/// # }
+/// ```
+///
+/// You could apply it to unit-structs (but probably not very useful):
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// struct NoPin;
+/// let p: Result<_, Infallible> = new_box(init_pin!(NoPin));
+/// # }
+/// ```
+///
+/// By default, no conversions are made for errors, as otherwise type inference
+/// may fail (like using the ? operator in a closure). If you need error conversion,
+/// you need to add a `?` before expression. You can add `try Error =>` to specify
+/// the error to avoid type inference failure.
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// # struct ManyPin {
+/// #     #[pin]
+/// #     a: NeedPin,
+/// #     b: usize,
+/// # }
+/// let p = new_box(init_pin!(try Infallible => ManyPin {
+///     a:? NeedPin::new,
+///     b: 0,
+/// }));
+/// # }
+/// ```
+/// 
+/// `init_pin!` can be used for nested initialization as well:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// # struct ManyPin {
+/// #     #[pin]
+/// #     a: NeedPin,
+/// #     b: usize,
+/// # }
+/// #[pin_init]
+/// struct TooManyPin {
+///     #[pin]
+///     a: NeedPin,
+///     #[pin]
+///     b: ManyPin,
+/// }
+/// let p = new_box(init_pin!(TooManyPin {
+///     a:? NeedPin::new,
+///     b: init_pin!(ManyPin {
+///         a: NeedPin::new,
+///         b: 0,
+///     }),
+/// }));
+/// # }
+/// ```
+/// 
 #[macro_export]
 macro_rules! init_pin {
     // try Error => Struct {}
-    (try $err:ty => $ty:ident { $($ident:ident : $expr:expr),* $(,)? }) => {{
+    (try $err:ty => $ty:ident { $($tt:tt)* }) => {{
         |this| -> $crate::PinInitResult<'_, $err> {
             use $crate::__private::PinInitBuildable;
             let builder = $ty::__builder(this);
-            $(let builder = builder.$ident($expr).map_err(|err| err.map(From::from))?;)*
+            $crate::__init_pin_internal!(@named builder => $($tt)*,);
             Ok(builder.__init_ok())
         }
     }};
     // try Error => Struct()
-    (try $err:ty => $ty:ident ( $($expr:expr),* $(,)? )) => {{
+    (try $err:ty => $ty:ident ( $($tt:tt)* )) => {{
         |this| -> $crate::PinInitResult<'_, $err> {
-            let builder = <$ty as $crate::__private::PinInitBuildable>::__builder(this);
-            $(let builder = builder.__next($expr).map_err(|err| err.map(From::from))?;)*
+            use $crate::__private::PinInitBuildable;
+            let builder = $ty::__builder(this);
+            $crate::__init_pin_internal!(@unnamed builder => $($tt)*,);
             Ok(builder.__init_ok())
         }
     }};
     // try Error => Struct
     (try $err:ty => $ty:ident) => {{
         |this| -> $crate::PinInitResult<'_, $err> {
-            let builder = <$ty as $crate::__private::PinInitBuildable>::__builder(this);
+            use $crate::__private::PinInitBuildable;
+            let builder = $ty::__builder(this);
             Ok(builder.__init_ok())
         }
     }};
 
     // Struct {}
-    ($ty:ident { $($ident:ident : $expr:expr),* $(,)? }) => {{
+    ($ty:ident { $($tt:tt)* }) => {{
         |this| {
             use $crate::__private::PinInitBuildable;
             let builder = $ty::__builder(this);
-            $(let builder = builder.$ident($expr)?;)*
+            $crate::__init_pin_internal!(@named builder => $($tt)*,);
             Ok(builder.__init_ok())
         }
     }};
     // Struct()
-    ($ty:ident ( $($expr:expr),* $(,)? )) => {{
+    ($ty:ident ( $($tt:tt)* )) => {{
         |this| {
-            let builder = <$ty as $crate::__private::PinInitBuildable>::__builder(this);
-            $(let builder = builder.__next($expr)?;)*
+            use $crate::__private::PinInitBuildable;
+            let builder = $ty::__builder(this);
+            $crate::__init_pin_internal!(@unnamed builder => $($tt)*,);
             Ok(builder.__init_ok())
         }
     }};
     // Struct
     ($ty:ident) => {{
         |this| {
-            let builder = <$ty as $crate::__private::PinInitBuildable>::__builder(this);
+            use $crate::__private::PinInitBuildable;
+            let builder = $ty::__builder(this);
             Ok(builder.__init_ok())
         }
     }};
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __init_pin_internal {
+    (@named $builder:ident => $(,)?) => {};
+    (@named $builder:ident => $ident:ident : ? $expr:expr, $($tt:tt)*) => {
+        let $builder = match $builder.$ident($expr) {
+            Ok(v) => v,
+            Err(err) => return Err(err.map(From::from)),
+        };
+        __init_pin_internal!(@named $builder => $($tt)*);
+    };
+    (@named $builder:ident => $ident:ident : $expr:expr, $($tt:tt)*) => {
+        let $builder = match $builder.$ident($expr) {
+            Ok(v) => v,
+            Err(err) => return Err(err),
+        };
+        __init_pin_internal!(@named $builder => $($tt)*);
+    };
+    (@unnamed $builder:ident => $(,)?) => {};
+    (@unnamed $builder:ident => ? $expr:expr, $($tt:tt)*) => {
+        let $builder = match $builder.__next($expr) {
+            Ok(v) => v,
+            Err(err) => return Err(err.map(From::from)),
+        };
+        __init_pin_internal!(@unnamed $builder => $($tt)*);
+    };
+    (@unnamed $builder:ident => $expr:expr, $($tt:tt)*) => {
+        let $builder = match $builder.__next($expr) {
+            Ok(v) => v,
+            Err(err) => return Err(err),
+        };
+        __init_pin_internal!(@unnamed $builder => $($tt)*);
+    };
 }
