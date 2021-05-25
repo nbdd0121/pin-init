@@ -3,6 +3,11 @@ name = "pin-init-internal"
 version = "0.1.0"
 authors = ["Gary Guo <gary@garyguo.net>"]
 edition = "2018"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/nbdd0121/pin-init"
+description = """
+Internal implementation details of crate `pin_init`.
+"""
 
 [lib]
 proc_macro = true

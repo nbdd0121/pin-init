@@ -1,6 +1,5 @@
 #![no_std]
 #![cfg_attr(doc_cfg, feature(doc_cfg))]
-#![feature(unsafe_block_in_unsafe_fn)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
 #[cfg(feature = "alloc")]

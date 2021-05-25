@@ -5,7 +5,6 @@ use syn::Error;
 
 mod pin_init;
 
-#[doc(hidden)]
 #[proc_macro_attribute]
 pub fn pin_init(attr: TokenStream, input: TokenStream) -> TokenStream {
     pin_init::pin_init_attr(attr.into(), input.into())
