@@ -1,0 +1,437 @@
+#![no_std]
+#![cfg_attr(doc_cfg, feature(doc_cfg))]
+#![feature(unsafe_block_in_unsafe_fn)]
+#![warn(unsafe_op_in_unsafe_fn)]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+#[cfg(feature = "alloc")]
+mod unique;
+
+/// Mark a type as being [`init_pin!`]-able.
+///
+/// Can only be applied to structs. Each field can be tagged with `#[pin]`
+/// or not. Tagged fields are pin-initialized, and untaged fields are initialized
+/// by value like they do in normal struct expression.
+///
+/// ```
+/// # use pin_init::*;
+/// # include!("doctest.rs");
+/// #[pin_init]
+/// struct ManyPin {
+///     #[pin]
+///     a: NeedPin,
+///     b: usize,
+/// }
+/// # fn main() {}
+/// ```
+///
+/// Also works for tuple-structs:
+/// ```
+/// # use pin_init::*;
+/// # include!("doctest.rs");
+/// #[pin_init]
+/// struct ManyPin(#[pin] NeedPin, usize);
+/// # fn main() {}
+/// ```
+///
+/// You could apply it to unit-structs (but probably not very useful)
+/// ```
+/// # use pin_init::*;
+/// # include!("doctest.rs");
+/// #[pin_init]
+/// struct NoPin;
+/// # fn main() {}
+/// ```
+pub use pin_init_internal::pin_init;
+#[cfg(feature = "alloc")]
+pub use unique::{UniqueArc, UniqueRc};
+
+use core::marker::PhantomData;
+use core::mem;
+use core::mem::MaybeUninit;
+
+#[cfg(feature = "alloc")]
+use alloc::{boxed::Box, rc::Rc, sync::Arc};
+#[cfg(feature = "alloc")]
+use core::{mem::ManuallyDrop, pin::Pin};
+
+/// A pinned, uninitialized pointer.
+///
+/// This can be considered as a [`Pin<&mut MaybeUninit<T>>`].
+///
+/// Creating this pointer ensures:
+/// * The pointee has a stable location in memory. It cannot be moved elsewhere.
+/// * The pointee is not yet initialized.
+/// * The [`PinInitResult`] returned by a pinning constructor is respected.
+///
+/// To ensure safety, the creator of `PinInit` has to:
+/// * Ensure [`PinInit<'a, T>`] is never used with `'a` equal to `'static`.
+/// * Verify that a [`PinInitResult<'a, E>`] is received for each [`PinInit<'a, T>`]
+///   produced. To ensure that the `PinInitResult` is indeed created from a given
+///   `PinInit`, the use of `PinInit` should be "closed", i.e. in the form of
+///   invoking a closure of type `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>`.
+///   The HRTB ensures that the `PinInitResult` must either be created from the
+///   supplied `PinInit` (or from another `PinInit<'static, T>`, which isn't possible).
+/// * If the [`PinInitResult<'a, E>`] is `Ok`, then the creator must treat the
+///   pointer as [`Pin<&mut T>`]. This means that the
+///   drop gurantee kick in; the memory cannot be deallocated until `T` is dropped.
+///   If the result is `Err`, then the creator must not treat the pointer as
+///   uninitialized and should not try to drop `T`.
+///   If the call panicked, then we are not certain about initialization state.
+///   We therefore must respect the drop guarantee but also not drop the value.
+///   The only solution is to leak memory. If that's not possible, then the
+///   caller must abort.
+///
+/// [`PinInit<'a, T>`]: PinInit
+/// [`PinInitResult<'a, E>`]: PinInitResult
+/// [Pin]: core::pin::Pin
+pub struct PinInit<'a, T> {
+    ptr: *mut MaybeUninit<T>,
+    // Make sure the lifetime `'a` isn't tied to `MaybeUninit<T>`, to avoid
+    // implying `T: 'a`. Note that `PinInit::new` still takes `&'a mut MaybeUninit<T>`,
+    // so only well-formed `PinInit` can be constructed.
+    _marker: PhantomData<&'a mut ()>,
+}
+
+impl<'a, T> PinInit<'a, T> {
+    /// Creates a new [`PinInit`] with a given [`MaybeUninit<T>`].
+    ///
+    /// # Safety
+    /// The caller must satisfy the safety requirement listed above.
+    #[inline]
+    pub unsafe fn new(ptr: &'a mut MaybeUninit<T>) -> Self {
+        PinInit {
+            ptr: ptr,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Gets a mutable reference to `MaybeUninit` inside of this `PinInit`.
+    ///
+    /// This is safe because the `MaybeUninit` we point to is not yet initialized,
+    /// and `MaybeUninit` does not have `Drop` implementation.
+    #[inline]
+    pub fn get_mut(&mut self) -> &mut MaybeUninit<T> {
+        unsafe { &mut *self.ptr }
+    }
+
+    /// Asserts that the initialize is indeed completed.
+    ///
+    /// # Safety
+    /// This function is unsafe as this is equivalent to [`MaybeUninit::assume_init`].
+    #[inline]
+    pub unsafe fn init_ok(self) -> PinInitOk<'a> {
+        PinInitOk {
+            marker: PhantomData,
+        }
+    }
+
+    /// Generates a `PinInitResult` signaling that the initialization is failed.
+    ///
+    /// Note that the caller should make sure nothing is partially pinned-initialized.
+    /// This isn't the contract of this function, but is the contract for
+    /// creating `PinInit` for pinned-initializing sub-fields.
+    #[inline]
+    pub fn init_err<E>(self, err: E) -> PinInitErr<'a, E> {
+        PinInitErr {
+            inner: err,
+            marker: PhantomData,
+        }
+    }
+
+    /// Completes the initialization by moving the given value.
+    ///
+    /// Useful if the the type `T` can be initialized unpinned.
+    #[inline]
+    pub fn init_with_value(mut self, value: T) -> PinInitOk<'a> {
+        // SAFFTY: writing to `MaybeUninit` is safe.
+        unsafe { self.get_mut().as_mut_ptr().write(value) };
+        // SAFETY: we have just performed initialization.
+        unsafe { self.init_ok() }
+    }
+}
+
+/// Proof that the value is pin-initialization.
+///
+/// See documentation of [`PinInit`] for details.
+pub struct PinInitOk<'a> {
+    marker: PhantomData<&'a mut ()>,
+}
+
+/// Proof that the value is not pin-initialized.
+///
+/// See documentation of [`PinInit`] for details.
+pub struct PinInitErr<'a, E> {
+    inner: E,
+    marker: PhantomData<&'a mut ()>,
+}
+
+impl<'a, E> PinInitErr<'a, E> {
+    /// Retrieve the result of whether the initialization has been completed.
+    ///
+    /// The returned value must be inspected in order to comply with the
+    /// safety guarantee of `PinInit`.
+    #[inline]
+    pub fn into_inner(self) -> E {
+        self.inner
+    }
+
+    #[inline]
+    pub fn map<T, F>(self, f: F) -> PinInitErr<'a, T>
+    where
+        F: FnOnce(E) -> T,
+    {
+        PinInitErr {
+            inner: f(self.inner),
+            marker: PhantomData,
+        }
+    }
+}
+
+/// Result of pin-initialization.
+///
+/// See documentation of [`PinInit`] for details.
+pub type PinInitResult<'a, E> = Result<PinInitOk<'a>, PinInitErr<'a, E>>;
+
+/// Pin-initialize a box.
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[inline]
+pub fn init_box<T, E, F>(x: Pin<Box<MaybeUninit<T>>>, f: F) -> Result<Pin<Box<T>>, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>,
+{
+    // SAFETY: We don't move value out.
+    // If `f` below panics, we might be in a partially initialized state. We
+    // cannot drop nor assume_init, so we can only leak.
+    let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
+    // SAFETY: pinning is guaranteed by `storage`'s pin guarantee.
+    //         We will check the return value, and act accordingly.
+    match f(unsafe { PinInit::new(&mut ptr) }) {
+        Ok(_) => {
+            // SAFETY: We know it's initialized, and both `ManuallyDrop` and `Pin`
+            //         are `#[repr(transparent)]` so this is safe.
+            Ok(unsafe { mem::transmute(ptr) })
+        }
+        Err(err) => {
+            let err = err.into_inner();
+            // SAFETY: We know it's not initialized.
+            drop(ManuallyDrop::into_inner(ptr));
+            Err(err)
+        }
+    }
+}
+
+/// Pin-initialize a `UniqueRc`.
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[inline]
+pub fn init_unique_rc<T, E, F>(
+    x: Pin<UniqueRc<MaybeUninit<T>>>,
+    f: F,
+) -> Result<Pin<UniqueRc<T>>, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>,
+{
+    // SAFETY: See `init_box`.
+    let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
+    match f(unsafe { PinInit::new(&mut ptr) }) {
+        Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
+        Err(err) => {
+            let err = err.into_inner();
+            drop(ManuallyDrop::into_inner(ptr));
+            Err(err)
+        }
+    }
+}
+
+/// Pin-initialize a `UniqueArc`.
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[inline]
+pub fn init_unique_arc<T, E, F>(
+    x: Pin<UniqueArc<MaybeUninit<T>>>,
+    f: F,
+) -> Result<Pin<UniqueArc<T>>, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>,
+{
+    // SAFETY: See `init_box`.
+    let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
+    match f(unsafe { PinInit::new(&mut ptr) }) {
+        Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
+        Err(err) => {
+            let err = err.into_inner();
+            drop(ManuallyDrop::into_inner(ptr));
+            Err(err)
+        }
+    }
+}
+
+/// Create a new `Box` and pin-initialize it.
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[inline]
+pub fn new_box<T, E, F>(f: F) -> Result<Pin<Box<T>>, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>,
+{
+    init_box(Box::pin(MaybeUninit::uninit()), f)
+}
+
+/// Create a new `UniqueRc` and pin-initialize it.
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[inline]
+pub fn new_unique_rc<T, E, F>(f: F) -> Result<Pin<UniqueRc<T>>, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>,
+{
+    init_unique_rc(UniqueRc::new_uninit().into(), f)
+}
+
+/// Create a new `UniqueArc` and pin-initialize it.
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[inline]
+pub fn new_unique_arc<T, E, F>(f: F) -> Result<Pin<UniqueArc<T>>, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>,
+{
+    init_unique_arc(UniqueArc::new_uninit().into(), f)
+}
+
+/// Create a new `Rc` and pin-initialize it.
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[inline]
+pub fn new_rc<T, E, F>(f: F) -> Result<Pin<Rc<T>>, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>,
+{
+    Ok(UniqueRc::shareable_pin(new_unique_rc(f)?))
+}
+
+/// Create a new `Arc` and pin-initialize it.
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[inline]
+pub fn new_arc<T, E, F>(f: F) -> Result<Pin<Arc<T>>, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, E>,
+{
+    Ok(UniqueArc::shareable_pin(new_unique_arc(f)?))
+}
+
+#[doc(hidden)]
+pub mod __private {
+    use super::*;
+    pub use pin_init_internal::PinInit;
+
+    #[inline]
+    pub fn stack_init<'a, T, E, F>(x: PinInit<'a, T>, f: F) -> PinInitResult<'a, E>
+    where
+        F: for<'b> FnOnce(PinInit<'b, T>) -> PinInitResult<'b, E>,
+    {
+        struct PanicGuard;
+        impl Drop for PanicGuard {
+            fn drop(&mut self) {
+                panic!("panicked while pin-initing variable on stack");
+            }
+        }
+
+        // If `f` below panics, we might be in a partially initialized state. We
+        // cannot drop nor assume_init, and we cannot leak memory on stack. So
+        // the only sensible action would be to abort (with double-panic).
+        let g = PanicGuard;
+        let res = f(x);
+        mem::forget(g);
+        res
+    }
+
+    #[inline]
+    pub unsafe fn assume_init_mut<T>(v: &mut MaybeUninit<T>) -> &mut T {
+        // SAFETY: caller makes the guarantee.
+        unsafe { &mut *v.as_mut_ptr() }
+    }
+
+    // Helps to find `init_pin` macro to find the builder.
+    pub trait PinInitBuildable<'this>: Sized {
+        type Builder;
+
+        fn __builder(init: PinInit<'this, Self>) -> Self::Builder;
+    }
+}
+
+/// Create and pin-initialize a new variable on the stack.
+#[macro_export]
+macro_rules! init_stack {
+    ($var:ident = $init:expr) => {
+        let mut storage = ::core::mem::MaybeUninit::uninit();
+        let $var = match $crate::__private::stack_init(
+            unsafe { $crate::PinInit::new(&mut storage) },
+            $init,
+        ) {
+            Ok(_) => {
+                Ok(unsafe { Pin::new_unchecked($crate::__private::assume_init_mut(&mut storage)) })
+            }
+            Err(err) => Err(err.into_inner()),
+        };
+    };
+}
+
+/// Create and pin-initialize a struct.
+#[macro_export]
+macro_rules! init_pin {
+    // try Error => Struct {}
+    (try $err:ty => $ty:ident { $($ident:ident : $expr:expr),* $(,)? }) => {{
+        |this| -> $crate::PinInitResult<'_, $err> {
+            use $crate::__private::PinInitBuildable;
+            let builder = $ty::__builder(this);
+            $(let builder = builder.$ident($expr).map_err(|err| err.map(From::from))?;)*
+            Ok(builder.__init_ok())
+        }
+    }};
+    // try Error => Struct()
+    (try $err:ty => $ty:ident ( $($expr:expr),* $(,)? )) => {{
+        |this| -> $crate::PinInitResult<'_, $err> {
+            let builder = <$ty as $crate::__private::PinInitBuildable>::__builder(this);
+            $(let builder = builder.__next($expr).map_err(|err| err.map(From::from))?;)*
+            Ok(builder.__init_ok())
+        }
+    }};
+    // try Error => Struct
+    (try $err:ty => $ty:ident) => {{
+        |this| -> $crate::PinInitResult<'_, $err> {
+            let builder = <$ty as $crate::__private::PinInitBuildable>::__builder(this);
+            Ok(builder.__init_ok())
+        }
+    }};
+
+    // Struct {}
+    ($ty:ident { $($ident:ident : $expr:expr),* $(,)? }) => {{
+        |this| {
+            use $crate::__private::PinInitBuildable;
+            let builder = $ty::__builder(this);
+            $(let builder = builder.$ident($expr)?;)*
+            Ok(builder.__init_ok())
+        }
+    }};
+    // Struct()
+    ($ty:ident ( $($expr:expr),* $(,)? )) => {{
+        |this| {
+            let builder = <$ty as $crate::__private::PinInitBuildable>::__builder(this);
+            $(let builder = builder.__next($expr)?;)*
+            Ok(builder.__init_ok())
+        }
+    }};
+    // Struct
+    ($ty:ident) => {{
+        |this| {
+            let builder = <$ty as $crate::__private::PinInitBuildable>::__builder(this);
+            Ok(builder.__init_ok())
+        }
+    }};
+}
