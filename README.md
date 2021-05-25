@@ -114,7 +114,7 @@ struct TooManyPin {
     b: ManyPin,
 }
 let p = new_box(init_pin!(TooManyPin {
-    a:? NeedPin::new,
+    a: NeedPin::new,
     b: init_pin!(ManyPin {
         a: NeedPin::new,
         b: 0,
