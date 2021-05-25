@@ -146,6 +146,11 @@
 //! They can be used to mutably initialize `Rc` and `Arc` before they are being shared.
 //! [`new_rc`] and [`new_arc`] are provided which create [`UniqueRc`] and [`UniqueArc`]
 //! internally, pin-initialize it with given constructor, and convert them to the shareable form.
+//!
+//! [`UniqueRc`]: struct.UniqueRc.html
+//! [`UniqueArc`]: struct.UniqueArc.html
+//! [`new_rc`]: fn.new_rc.html
+//! [`new_arc`]: fn.new_arc.html
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -192,42 +197,25 @@ pub use unique::{UniqueArc, UniqueRc};
 use core::marker::PhantomData;
 use core::mem;
 use core::mem::MaybeUninit;
+use core::pin::Pin;
 
 #[cfg(feature = "alloc")]
 use alloc::{boxed::Box, rc::Rc, sync::Arc};
 #[cfg(feature = "alloc")]
-use core::{mem::ManuallyDrop, pin::Pin};
+use core::mem::ManuallyDrop;
 
 /// A pinned, uninitialized pointer.
 ///
-/// This can be considered as a [`Pin<&mut MaybeUninit<T>>`].
-///
-/// Creating this pointer ensures:
+/// This can be considered as [`Pin<&mut MaybeUninit<T>>`]:
 /// * The pointee has a stable location in memory. It cannot be moved elsewhere.
-/// * The pointee is not yet initialized.
-/// * The [`PinInitResult`] returned by a pinning constructor is respected.
+/// * The pointee is not yet initialized, therefore the drop guarantee is not
+///   existent.
 ///
-/// To ensure safety, the creator of `PinInit` has to:
-/// * Ensure [`PinInit<'a, T>`] is never used with `'a` equal to `'static`.
-/// * Verify that a [`PinInitResult<'a, T, E>`] is received for each [`PinInit<'a, T>`]
-///   produced. To ensure that the `PinInitResult` is indeed created from a given
-///   `PinInit`, the use of `PinInit` should be "closed", i.e. in the form of
-///   invoking a closure of type `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>`.
-///   The HRTB ensures that the `PinInitResult` must either be created from the
-///   supplied `PinInit` (or from another `PinInit<'static, T>`, which isn't possible).
-/// * If the [`PinInitResult<'a, T, E>`] is `Ok`, then the creator must treat the
-///   pointer as [`Pin<&mut T>`]. This means that the
-///   drop gurantee kick in; the memory cannot be deallocated until `T` is dropped.
-///   If the result is `Err`, then the creator must not treat the pointer as
-///   uninitialized and should not try to drop `T`.
-///   If the call panicked, then we are not certain about initialization state.
-///   We therefore must respect the drop guarantee but also not drop the value.
-///   The only solution is to leak memory. If that's not possible, then the
-///   caller must abort.
-///
-/// [`PinInit<'a, T>`]: PinInit
-/// [`PinInitResult<'a, T, E>`]: PinInitResult
-/// [Pin]: core::pin::Pin
+/// However, `PinInit` provides the additional guarantee that once a method
+/// that successfully initialze the data is called (e.g. [`init_ok`](#method.init_ok)), the
+/// pointee will be considered as [`Pin<&mut T>`], therefore the drop guarantee
+/// kicks in, and `T`'s destructor is guaranteed to be called before the storage
+/// is deallocated.
 pub struct PinInit<'a, T> {
     ptr: *mut MaybeUninit<T>,
     // Make sure the lifetime `'a` isn't tied to `MaybeUninit<T>`, to avoid
@@ -240,7 +228,30 @@ impl<'a, T> PinInit<'a, T> {
     /// Creates a new [`PinInit`] with a given [`MaybeUninit<T>`].
     ///
     /// # Safety
-    /// The caller must satisfy the safety requirement listed above.
+    /// The caller must ensure `ptr` has a stable location in memory.
+    ///
+    /// The caller must obtain a [`PinInitResult`] that is tied to the lifetime of the returned
+    /// `PinInit`, and need to respect its value:
+    /// * If [`PinInitOk`] is obtained, the caller must treat the `ptr` as [`Pin<&mut T>`].
+    ///   This means that the drop guarantee kick in; the memory cannot be deallocated until `T`
+    ///   is dropped.
+    /// * If [`PinInitErr`] is obtained, `ptr` is uninitialized and the caller must not
+    ///   try to drop `T`.
+    /// * If panic happens while trying to get the result, then we are not certain about
+    ///   initialization state. This means that the caller must respect the drop guarantee,
+    ///   but also not drop the value. The only solution is to leak memory. If that's not possible,
+    ///   then the caller must abort the process.
+    ///
+    /// The lifetime associated with this function should be "closed". It should be a local,
+    /// temporary lifetime, shorter than any of the lifetime the caller have access to (including
+    /// `'static`, and should not escape the calling function.
+    /// This is to guarantee that the only way to get a [`PinInitResult<'a, T, E>`]
+    /// is to use of the methods of this particular `PinInit` returned.
+    /// In order to satisfy the requirement, the caller typically takes a constructor with type
+    /// `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>`.
+    ///
+    /// [`PinInit<'a, T>`]: PinInit
+    /// [`PinInitResult<'a, T, E>`]: PinInitResult
     #[inline]
     pub unsafe fn new(ptr: &'a mut MaybeUninit<T>) -> Self {
         PinInit {
@@ -258,7 +269,8 @@ impl<'a, T> PinInit<'a, T> {
         unsafe { &mut *self.ptr }
     }
 
-    /// Asserts that the initialize is indeed completed.
+    /// Asserts that the initialize is indeed completed. Doing so initiates the
+    /// drop guarantee of `T`.
     ///
     /// # Safety
     /// This function is unsafe as this is equivalent to [`MaybeUninit::assume_init`].
