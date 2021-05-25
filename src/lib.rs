@@ -2,6 +2,140 @@
 #![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![warn(unsafe_op_in_unsafe_fn)]
 
+//! Safe Safe pinned-initialization in Rust.
+//!
+//! # The problem
+//! Rust's `Pin` provides sufficient guarantee for C interop and self-referential
+//! structs -- their address are stable once they're pinned and the destructor is
+//! guaranteed to be called before the memory region can be deallocated.
+//!
+//! The problem here is "once pinned". `Pin` expects the type can be created without
+//! pinning, and can be pinned later before any operations. This is okay for
+//! `Generator`s, which are created without any self references, and self references
+//! can only be created when polling the generator. For other types, e.g.
+//! `pthread_mutex_t`, it is expected to be pinned from the start.
+//!
+//! For demonstration purpose, we will use this type `NeedPin`:
+//! ```
+//! # use core::marker::PhantomPinned;
+//! struct NeedPin {
+//! 	// Must points to itself
+//!     address: *const NeedPin,
+//!     _pinned: PhantomPinned,
+//! }
+//!
+//! impl NeedPin {
+//!     fn verify(&self) {
+//!         assert!(ptr::eq(self, self.address), "invariant not held");
+//!     }
+//! }
+//!
+//! impl Drop for NeedPin {
+//!     fn drop(&mut self) {
+//!         /* Must be called */
+//!     }
+//! }
+//! ```
+//!
+//! One could separate creating and initialization:
+//! ```
+//! # include!("doctest.rs");
+//! impl NeedPin {
+//!     unsafe fn uninit() -> Self {
+//!         Self {
+//!             address: ptr::null(),
+//!             _pinned: PhantomPinned,
+//!         }
+//!     }
+//!
+//!     unsafe fn init(self: Pin<&mut Self>) -> Result<(), Error> {
+//!         let this = unsafe { self.get_unchecked_mut() };
+//!         this.address = this;
+//!     }
+//! }
+//! ```
+//! but this requires unsafe and is very difficult to use.
+//!
+//! The ultimate goal is:
+//! 1. Safety. We should be able to create and use such pinned type without unsafe.
+//!    (Obviously the pinned type themselves are still unsafe to implement).
+//! 2. Ergonomics. The syntax shouldn't be too different from anormal Rust.
+//! 3. Aggregatable. A struct containing multiple pinned types can be safely
+//!    created and initialized together.
+//! 4. No Implicit Allocation. Allocation should not be required during initialization.
+//!    User should be able to dictate whether it's initialized in a box or on the stack.
+//! 5. Fallible. No assumption is made about success of initialization.
+//!
+//! # The solution: `pin_init`
+//!
+//! This crate provides type [`PinInit`] and [`PinInitResult`] as the primitives
+//! for safe pinned-initialization. Details about these types can be found in
+//! their respective documentation, but in a nutshell, instead of having a (fallible)
+//! constructor of type `FnOnce() -> Result<T, Err>` like a normal unpinned type,
+//! `pin_init` expect you to present a constructor of type
+//! `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, Err>`.
+//!
+//! `NeedPin::new` could be define like this:
+//! ```
+//! # use pin_init::*;
+//! # use std::convert::Infallible;
+//! impl NeedPin {
+//!     pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Infallible> {
+//!         let v = this.get_mut().as_mut_ptr();
+//!         unsafe { *core::ptr::addr_of_mut!((*v).address) = v };
+//!         Ok(unsafe { this.init_ok() })
+//!     }
+//! }
+//! ```
+//!
+//! With Rust's affine type system and borrow checker, the `PinInitResult` is
+//! essentially a certificate about whether the type is initialized or not.
+//! `NeedPin` can now be easily initialized:
+//! ```
+//! # include!("doctest.rs");
+//! // In a box
+//! let p: Box<Pin<NeedPin>> = pin_init::new_box(NeedPin::new).unwrap();
+//! // On the stack
+//! init_stack!(p = NeedPin::new);
+//! let p: Pin<&mut NeedPin> = p.unwrap();
+//! ```
+//!
+//! For structs, if [`#[pin_init]`](pin_init) when defining the struct, then
+//! [`init_pin!`] can create it very similar to the struct expression. Nested
+//! structures are also supported.
+//!
+//! ```
+//! # include!("doctest.rs");
+//! # fn main() {
+//! [pin_init]
+//!  struct ManyPin {
+//!      #[pin]
+//!      a: NeedPin,
+//!      b: usize,
+//! }
+//!
+//! [pin_init]
+//! struct TooManyPin {
+//!     #[pin]
+//!     a: NeedPin,
+//!     #[pin]
+//!     b: ManyPin,
+//! }
+//! let p = new_box(init_pin!(TooManyPin {
+//!     a:? NeedPin::new,
+//!     b: init_pin!(ManyPin {
+//!         a: NeedPin::new,
+//!         b: 0,
+//!     }),
+//! }));
+//! # }
+//! ```
+//!
+//! This crate also provides a [`UniqueRc`] and [`UniqueArc`], inspired from servo_arc.
+//! They can be used to mutably initialize `Rc` and `Arc` before they are being shared.
+//! [`new_rc`] and [`new_arc`] are provided which create [`UniqueRc`] and [`UniqueArc`]
+//! internally, pin-initialize it with given constructor, and convert them to the shareable form.
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
@@ -370,7 +504,7 @@ pub mod __private {
 /// // Now `p` is a `Result<Pin<&mut NeedPin>, Infallible>`.
 /// # }
 /// ```
-/// 
+///
 /// Can be used together with [`init_pin!`]:
 /// ```
 /// # include!("doctest.rs");
@@ -387,6 +521,11 @@ pub mod __private {
 /// }));
 /// # }
 /// ```
+///
+/// The initializers should not panic, and should use `Err` to report failures.
+/// If the initializer fails, because we cannot tell whether the value is
+/// initialized or not (or even just partially initialized), drop guarantee cannot
+/// be kept, this macro will abort the process.
 #[macro_export]
 macro_rules! init_stack {
     ($var:ident = $init:expr) => {
@@ -395,9 +534,9 @@ macro_rules! init_stack {
             unsafe { $crate::PinInit::new(&mut storage) },
             $init,
         ) {
-            Ok(_) => {
-                Ok(unsafe { ::core::pin::Pin::new_unchecked($crate::__private::assume_init_mut(&mut storage)) })
-            }
+            Ok(_) => Ok(unsafe {
+                ::core::pin::Pin::new_unchecked($crate::__private::assume_init_mut(&mut storage))
+            }),
             Err(err) => Err(err.into_inner()),
         };
     };
@@ -465,7 +604,7 @@ macro_rules! init_stack {
 /// }));
 /// # }
 /// ```
-/// 
+///
 /// `init_pin!` can be used for nested initialization as well:
 /// ```
 /// # include!("doctest.rs");
@@ -492,7 +631,7 @@ macro_rules! init_stack {
 /// }));
 /// # }
 /// ```
-/// 
+///
 #[macro_export]
 macro_rules! init_pin {
     // try Error => Struct {}

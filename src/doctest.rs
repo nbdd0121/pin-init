@@ -2,6 +2,7 @@
 
 use std::convert::Infallible;
 use std::marker::PhantomPinned;
+use std::pin::Pin;
 use pin_init::*;
 
 pub struct NeedPin {
