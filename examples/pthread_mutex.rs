@@ -105,13 +105,7 @@ impl<T> Mutex<T> {
     {
         this.init(init_pin!(Mutex {
             mutex: RawMutex::new,
-            data: |mut data| {
-                let ptr = data.get_mut().as_mut_ptr() as *mut MaybeUninit<T>;
-                match unsafe { value(PinInit::new(&mut *ptr)) } {
-                    Ok(_) => Ok(unsafe { data.init_ok() }),
-                    Err(err) => Err(data.init_err(err.into_inner())),
-                }
-            }
+            data: init_pin!(UnsafeCell(value)),
         }))
     }
 

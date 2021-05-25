@@ -277,7 +277,7 @@ impl<'a, T> PinInit<'a, T> {
     #[inline]
     pub unsafe fn init_ok(self) -> PinInitOk<'a, T> {
         PinInitOk {
-            ptr: unsafe { Pin::new_unchecked(&mut *(self.ptr as *mut T)) },
+            ptr: self.ptr as *mut T,
             marker: PhantomData,
         }
     }
@@ -322,7 +322,10 @@ impl<'a, T> PinInit<'a, T> {
 ///
 /// See documentation of [`PinInit`] for details.
 pub struct PinInitOk<'a, T> {
-    ptr: Pin<&'a mut T>,
+    // We don't want a T: 'a bound, so don't we cannot put `Pin<&'a mut T>` here.
+    // This is safe as, `PinInitOk` can only come from `PinInit::new` which
+    // guarantees the well-formedness.
+    ptr: *mut T,
     marker: PhantomData<&'a mut ()>,
 }
 
@@ -330,19 +333,19 @@ impl<'a, T> PinInitOk<'a, T> {
     /// Get the `Pin<&T>` view of the pinned and initialized `T`.
     #[inline]
     pub fn as_ref(&self) -> Pin<&T> {
-        self.ptr.as_ref()
+        unsafe { Pin::new_unchecked(&*self.ptr) }
     }
 
     /// Get the `Pin<&mut T>` view of the pinned and initialized `T`.
     #[inline]
     pub fn as_mut(&mut self) -> Pin<&mut T> {
-        self.ptr.as_mut()
+        unsafe { Pin::new_unchecked(&mut *self.ptr) }
     }
 
     /// Get the pinned and initialized `T`.
     #[inline]
     pub fn into_inner(self) -> Pin<&'a mut T> {
-        self.ptr
+        unsafe { Pin::new_unchecked(&mut *self.ptr) }
     }
 }
 
@@ -551,11 +554,67 @@ pub mod __private {
         }
     }
 
-    // Helps to find `init_pin` macro to find the builder.
+    // Used by the `init_pin` macro and implemented by `pin_init` macro.
+    // We also provide a few manual implementation for nullary and unary
+    // std types.
     pub trait PinInitBuildable<'this>: Sized {
         type Builder;
 
         fn __builder(init: PinInit<'this, Self>) -> Self::Builder;
+    }
+
+    pub struct ValueBuilder<'this, T>(PinInitOk<'this, T>);
+
+    impl<'this, T> ValueBuilder<'this, T> {
+        #[inline]
+        pub fn __init_ok(self) -> PinInitOk<'this, T> {
+            self.0
+        }
+    }
+
+    // pin-project users may want a #[pin] PhantomPinned
+    impl<'this> PinInitBuildable<'this> for core::marker::PhantomPinned {
+        type Builder = ValueBuilder<'this, Self>;
+
+        #[inline]
+        fn __builder(init: PinInit<'this, Self>) -> Self::Builder {
+            ValueBuilder(init.init_with_value(Self))
+        }
+    }
+
+    pub struct TransparentBuilder<'this, T, W>(PinInit<'this, W>, PhantomData<PinInit<'this, T>>);
+
+    impl<'this, T> PinInitBuildable<'this> for core::cell::UnsafeCell<T> {
+        type Builder = TransparentBuilder<'this, T, core::cell::UnsafeCell<T>>;
+
+        #[inline]
+        fn __builder(init: PinInit<'this, Self>) -> Self::Builder {
+            TransparentBuilder(init, PhantomData)
+        }
+    }
+
+    impl<'this, T> PinInitBuildable<'this> for core::cell::Cell<T> {
+        type Builder = TransparentBuilder<'this, T, core::cell::Cell<T>>;
+
+        #[inline]
+        fn __builder(init: PinInit<'this, Self>) -> Self::Builder {
+            TransparentBuilder(init, PhantomData)
+        }
+    }
+
+    impl<'this, T, W> TransparentBuilder<'this, T, W> {
+        #[inline]
+        pub fn __next<E, F>(mut self, f: F) -> Result<ValueBuilder<'this, W>, PinInitErr<'this, E>>
+        where
+            F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+        {
+            // This is okay because we only deal with #[repr(transparent)] structs here.
+            let ptr = self.0.get_mut().as_mut_ptr() as *mut MaybeUninit<T>;
+            match f(unsafe { PinInit::new(&mut *ptr) }) {
+                Ok(_) => Ok(ValueBuilder(unsafe { self.0.init_ok() })),
+                Err(err) => Err(self.0.init_err(err.into_inner())),
+            }
+        }
     }
 }
 
@@ -708,7 +767,18 @@ macro_rules! init_stack {
 ///     }
 /// }
 /// # }
+/// ```
 ///
+/// `init_pin!` can also initialize some std types:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// use core::cell::UnsafeCell;
+/// use core::cell::Cell;
+/// init_pin!(try Infallible => PhantomPinned);
+/// init_pin!(UnsafeCell(NeedPin::new));
+/// init_pin!(Cell(NeedPin::new));
+/// # }
 /// ```
 #[macro_export]
 macro_rules! init_pin {
