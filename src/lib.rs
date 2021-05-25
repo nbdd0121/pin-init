@@ -20,7 +20,7 @@
 //! # use std::marker::PhantomPinned;
 //! # use std::ptr;
 //! struct NeedPin {
-//! 	// Must points to itself
+//!     // Must points to itself
 //!     address: *const NeedPin,
 //!     _pinned: PhantomPinned,
 //! }
@@ -255,7 +255,7 @@ impl<'a, T> PinInit<'a, T> {
     #[inline]
     pub unsafe fn new(ptr: &'a mut MaybeUninit<T>) -> Self {
         PinInit {
-            ptr: ptr,
+            ptr,
             _marker: PhantomData,
         }
     }

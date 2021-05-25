@@ -7,7 +7,7 @@ use syn::{
 
 pub fn pin_init_attr(_attr: TokenStream, input: TokenStream) -> Result<TokenStream> {
     let mut input: ItemStruct = syn::parse2(input)?;
-    let attrs = std::mem::replace(&mut input.attrs, Vec::new());
+    let attrs = std::mem::take(&mut input.attrs);
     Ok(quote! {
         #(#attrs)*
         #[derive(::pin_init::__private::PinInit)]
@@ -91,12 +91,14 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                     let bounds = std::mem::replace(&mut t.bounds, Punctuated::new());
                     t.bounds = bounds
                         .into_iter()
-                        .filter(|b| match b {
-                            TypeParamBound::Trait(TraitBound {
-                                modifier: TraitBoundModifier::Maybe(_),
-                                ..
-                            }) => false,
-                            _ => true,
+                        .filter(|b| {
+                            !matches!(
+                                b,
+                                TypeParamBound::Trait(TraitBound {
+                                    modifier: TraitBoundModifier::Maybe(_),
+                                    ..
+                                })
+                            )
                         })
                         .collect();
                 }
