@@ -207,7 +207,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                     #(,#generics)*
                     #typestate_ty_post
                 >, ::pin_init::PinInitErr<#this_lifetime, #error_ident>>
-                    where #fn_ident: for<'__a> ::core::ops::FnOnce(::pin_init::PinInit<'__a, #ty>) -> ::pin_init::PinInitResult<'__a, #error_ident>
+                    where #fn_ident: for<'__a> ::core::ops::FnOnce(::pin_init::PinInit<'__a, #ty>) -> ::pin_init::PinInitResult<'__a, #ty, #error_ident>
                 {
                     let base = self.ptr.get_mut().as_mut_ptr();
                     // SAFETY: No actual dereference
@@ -281,7 +281,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                 #typestate_ty_post
             > #where_clause {
                 #[inline]
-                fn __init_ok(mut self) -> ::pin_init::PinInitOk<#this_lifetime>{
+                fn __init_ok(mut self) -> ::pin_init::PinInitOk<#this_lifetime, #ident<#(#generics),*>>{
                     unsafe { self.ptr.init_ok() }
                 }
             }

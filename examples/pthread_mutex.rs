@@ -29,31 +29,31 @@ impl Drop for RawMutex {
 
 impl RawMutex {
     // Use pin_init's abstraction to provide a safe initializaiton.
-    pub fn new(mut init: PinInit<'_, Self>) -> PinInitResult<'_, Error> {
-        let ptr = init.get_mut().as_mut_ptr() as *mut libc::pthread_mutex_t;
+    pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Self, Error> {
+        let ptr = this.get_mut().as_mut_ptr() as *mut libc::pthread_mutex_t;
         unsafe {
             ptr.write(libc::PTHREAD_MUTEX_INITIALIZER);
 
             let mut attr = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
             let ret = libc::pthread_mutexattr_init(attr.as_mut_ptr());
             if ret != 0 {
-                return Err(init.init_err(Error::from_raw_os_error(ret)));
+                return Err(this.init_err(Error::from_raw_os_error(ret)));
             }
 
             let ret =
                 libc::pthread_mutexattr_settype(attr.as_mut_ptr(), libc::PTHREAD_MUTEX_NORMAL);
             if ret != 0 {
                 libc::pthread_mutexattr_destroy(attr.as_mut_ptr());
-                return Err(init.init_err(Error::from_raw_os_error(ret)));
+                return Err(this.init_err(Error::from_raw_os_error(ret)));
             }
 
             let ret = libc::pthread_mutex_init(ptr, attr.as_ptr());
             libc::pthread_mutexattr_destroy(attr.as_mut_ptr());
             if ret != 0 {
-                return Err(init.init_err(Error::from_raw_os_error(ret)));
+                return Err(this.init_err(Error::from_raw_os_error(ret)));
             }
 
-            Ok(init.init_ok())
+            Ok(this.init_ok())
         }
     }
 
@@ -98,11 +98,11 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
 }
 
 impl<T> Mutex<T> {
-    pub fn new<F>(init: PinInit<'_, Self>, value: F) -> PinInitResult<'_, Error>
+    pub fn new<F>(this: PinInit<'_, Self>, value: F) -> PinInitResult<'_, Self, Error>
     where
-        F: for<'a> FnOnce(PinInit<'_, T>) -> PinInitResult<'_, Error>,
+        F: for<'a> FnOnce(PinInit<'_, T>) -> PinInitResult<'_, T, Error>,
     {
-        init_pin!(Mutex {
+        this.init(init_pin!(Mutex {
             mutex: RawMutex::new,
             data: |mut data| {
                 let ptr = data.get_mut().as_mut_ptr() as *mut MaybeUninit<T>;
@@ -111,11 +111,11 @@ impl<T> Mutex<T> {
                     Err(err) => Err(data.init_err(err.into_inner())),
                 }
             }
-        })(init)
+        }))
     }
 
-    pub fn new_with_value(init: PinInit<'_, Self>, value: T) -> PinInitResult<'_, Error> {
-        Self::new(init, |s| Ok(s.init_with_value(value)))
+    pub fn new_with_value(this: PinInit<'_, Self>, value: T) -> PinInitResult<'_, Self, Error> {
+        Self::new(this, |s| Ok(s.init_with_value(value)))
     }
 
     pub fn lock(&self) -> Pin<MutexGuard<'_, T>> {

@@ -70,7 +70,7 @@ for safe pinned-initialization. Details about these types can be found in
 their respective documentation, but in a nutshell, instead of having a (fallible)
 constructor of type `FnOnce() -> Result<T, Err>` like a normal unpinned type,
 `pin_init` expect you to present a constructor of type
-`for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, Err>`.
+`for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, Err>`.
 
 `NeedPin::new` could be define like this:
 ```rust

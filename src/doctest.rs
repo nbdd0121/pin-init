@@ -18,7 +18,7 @@ impl NeedPin {
 }
 
 impl NeedPin {
-    pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Infallible> {
+    pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Self, Infallible> {
         let v = this.get_mut().as_mut_ptr();
         unsafe { *ptr::addr_of_mut!((*v).address) = v };
         Ok(unsafe { this.init_ok() })
