@@ -552,28 +552,56 @@ pub mod __private {
     use super::*;
     pub use pin_init_internal::PinInit;
 
-    #[inline]
-    pub fn stack_init<'a, T, E, F>(x: PinInit<'a, T>, f: F) -> Result<Pin<&'a mut T>, E>
-    where
-        F: for<'b> FnOnce(PinInit<'b, T>) -> PinInitResult<'b, T, E>,
-    {
-        struct PanicGuard;
-        impl Drop for PanicGuard {
-            fn drop(&mut self) {
-                panic!("panicked while pin-initing variable on stack");
-            }
+    pub struct StackWrapper<T>(MaybeUninit<T>, bool);
+
+    impl<T> StackWrapper<T> {
+        #[inline]
+        pub fn new() -> Self {
+            StackWrapper(MaybeUninit::uninit(), false)
         }
 
-        // If `f` below panics, we might be in a partially initialized state. We
-        // cannot drop nor assume_init, and we cannot leak memory on stack. So
-        // the only sensible action would be to abort (with double-panic).
-        let g = PanicGuard;
-        let res = f(x);
-        mem::forget(g);
+        #[inline]
+        pub fn init<F, E>(self: Pin<&mut Self>, f: F) -> Result<Pin<&mut T>, E>
+        where
+            F: for<'b> FnOnce(PinInit<'b, T>) -> PinInitResult<'b, T, E>,
+        {
+            struct PanicGuard;
+            impl Drop for PanicGuard {
+                #[inline]
+                fn drop(&mut self) {
+                    panic!("panicked while pin-initing variable on stack");
+                }
+            }
 
-        match res {
-            Ok(ok) => Ok(ok.into_inner()),
-            Err(err) => Err(err.into_inner()),
+            assert!(!self.1);
+
+            let this = unsafe { self.get_unchecked_mut() };
+
+            // If `f` below panics, we might be in a partially initialized state. We
+            // cannot drop nor assume_init, and we cannot leak memory on stack. So
+            // the only sensible action would be to abort (with double-panic).
+            let g = PanicGuard;
+            let res = f(unsafe { PinInit::new(&mut this.0) });
+            mem::forget(g);
+
+            match res {
+                Ok(ok) => {
+                    this.1 = true;
+                    Ok(ok.into_inner())
+                }
+                Err(err) => Err(err.into_inner()),
+            }
+        }
+    }
+
+    impl<T> Drop for StackWrapper<T> {
+        #[inline]
+        fn drop(&mut self) {
+            if self.1 {
+                unsafe {
+                    self.0.as_mut_ptr().drop_in_place();
+                }
+            }
         }
     }
 
@@ -672,9 +700,8 @@ pub mod __private {
 #[macro_export]
 macro_rules! init_stack {
     ($var:ident = $init:expr) => {
-        let mut storage = ::core::mem::MaybeUninit::uninit();
-        let $var =
-            $crate::__private::stack_init(unsafe { $crate::PinInit::new(&mut storage) }, $init);
+        let mut storage = $crate::__private::StackWrapper::new();
+        let $var = unsafe { Pin::new_unchecked(&mut storage) }.init($init);
     };
 }
 

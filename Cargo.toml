@@ -1,10 +1,12 @@
 [package]
 name = "pin-init"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Gary Guo <gary@garyguo.net>"]
 edition = "2018"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/nbdd0121/pin-init"
+keywords = ["pin", "macros", "attribute"]
+categories = ["no-std", "rust-patterns"]
 description = """
 Safe pinned-initialization in Rust
 """
