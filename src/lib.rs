@@ -75,9 +75,10 @@
 //! This crate provides type [`PinInit`] and [`PinInitResult`] as the primitives
 //! for safe pinned-initialization. Details about these types can be found in
 //! their respective documentation, but in a nutshell, instead of having a (fallible)
-//! constructor of type `FnOnce() -> Result<T, Err>` like a normal unpinned type,
-//! `pin_init` expect you to present a constructor of type
-//! `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, Err>`.
+//! constructor that returns `Result<T, Err>`, `pin_init` expect you to present a constructor
+//! that returns `impl PinInitializer<T, Err>`, where [`PinInitializer`] can be created from
+//! a closure of type `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, Err>`
+//! using [`init_from_closure`].
 //!
 //! `NeedPin::new` could be define like this:
 //! ```no_run
@@ -89,10 +90,12 @@
 //! #     _pinned: std::marker::PhantomPinned,
 //! # }
 //! impl NeedPin {
-//!     pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Self, Infallible> {
-//!         let v = this.get_mut().as_mut_ptr();
-//!         unsafe { *ptr::addr_of_mut!((*v).address) = v };
-//!         Ok(unsafe { this.init_ok() })
+//!     pub fn new() -> impl PinInitializer<Self, Infallible> {
+//!         init_from_closure(|mut this: PinInit<'_, Self>| -> PinInitResult<'_, Self, Infallible> {
+//!             let v = this.get_mut().as_mut_ptr();
+//!             unsafe { *ptr::addr_of_mut!((*v).address) = v };
+//!             Ok(unsafe { this.init_ok() })
+//!         })
 //!     }
 //! }
 //! ```
@@ -104,9 +107,9 @@
 //! # include!("doctest.rs");
 //! # fn main() {
 //! // In a box
-//! let p: Pin<Box<NeedPin>> = pin_init::new_box(NeedPin::new).unwrap();
+//! let p: Pin<Box<NeedPin>> = pin_init::new_box(NeedPin::new()).unwrap();
 //! // On the stack
-//! init_stack!(p = NeedPin::new);
+//! init_stack!(p = NeedPin::new());
 //! let p: Pin<&mut NeedPin> = p.unwrap();
 //! # }
 //! ```
@@ -133,9 +136,9 @@
 //!     b: ManyPin,
 //! }
 //! let p = new_box(init_pin!(TooManyPin {
-//!     a: NeedPin::new,
+//!     a: NeedPin::new(),
 //!     b: init_pin!(ManyPin {
-//!         a: NeedPin::new,
+//!         a: NeedPin::new(),
 //!         b: 0,
 //!     }),
 //! }));
@@ -255,7 +258,7 @@ impl<'a, T> PinInit<'a, T> {
     /// This is to guarantee that the only way to get a [`PinInitResult<'a, T, E>`]
     /// is to use of the methods of this particular `PinInit` returned.
     /// In order to satisfy the requirement, the caller typically takes a constructor with type
-    /// `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>`.
+    /// `PinInitializer<T, E>`, which can be seen as `for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>`.
     ///
     /// [`PinInit<'a, T>`]: PinInit
     /// [`PinInitResult<'a, T, E>`]: PinInitResult
@@ -308,9 +311,9 @@ impl<'a, T> PinInit<'a, T> {
     #[inline]
     pub fn init<E, F>(self, value: F) -> PinInitResult<'a, T, E>
     where
-        F: FnOnce(Self) -> PinInitResult<'a, T, E>,
+        F: PinInitializer<T, E>,
     {
-        value(self)
+        value.init(self)
     }
 
     /// Completes the initialization by moving the given value.
@@ -325,7 +328,7 @@ impl<'a, T> PinInit<'a, T> {
     }
 }
 
-/// Proof that the value is pin-initialization.
+/// Proof that the value is pin-initialized.
 ///
 /// See documentation of [`PinInit`] for details.
 pub struct PinInitOk<'a, T> {
@@ -401,13 +404,48 @@ impl<'a, E> PinInitErr<'a, E> {
 /// See documentation of [`PinInit`] for details.
 pub type PinInitResult<'a, T, E> = Result<PinInitOk<'a, T>, PinInitErr<'a, E>>;
 
+/// Initializer that can be used to safely pin-initialize `T`.
+///
+/// A blanket implementation `impl<T, E> PinInitializer<T, E> for T` is provided for all types, so
+/// a non-pinned value can be used directly for pin-initialization.
+pub trait PinInitializer<T, E> {
+    fn init<'a>(self, this: PinInit<'a, T>) -> PinInitResult<'a, T, E>;
+}
+
+impl<T, E> PinInitializer<T, E> for T {
+    fn init<'a>(self, this: PinInit<'a, T>) -> PinInitResult<'a, T, E> {
+        Ok(this.init_with_value(self))
+    }
+}
+
+/// Construct a [`PinInitializer<T, E>`] with a closure.
+pub fn init_from_closure<T, E, F>(f: F) -> impl PinInitializer<T, E>
+where
+    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+{
+    struct ClosureInit<T, E, F>(F, PhantomData<fn(T) -> E>)
+    where
+        F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>;
+
+    impl<T, E, F> PinInitializer<T, E> for ClosureInit<T, E, F>
+    where
+        F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    {
+        fn init<'a>(self, this: PinInit<'a, T>) -> PinInitResult<'a, T, E> {
+            (self.0)(this)
+        }
+    }
+
+    ClosureInit(f, PhantomData)
+}
+
 /// Pin-initialize a box.
 #[cfg(feature = "alloc")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
 #[inline]
 pub fn init_box<T, E, F>(x: Pin<Box<MaybeUninit<T>>>, f: F) -> Result<Pin<Box<T>>, E>
 where
-    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    F: PinInitializer<T, E>,
 {
     // SAFETY: We don't move value out.
     // If `f` below panics, we might be in a partially initialized state. We
@@ -415,7 +453,7 @@ where
     let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
     // SAFETY: pinning is guaranteed by `storage`'s pin guarantee.
     //         We will check the return value, and act accordingly.
-    match f(unsafe { PinInit::new(&mut ptr) }) {
+    match f.init(unsafe { PinInit::new(&mut ptr) }) {
         Ok(_) => {
             // SAFETY: We know it's initialized, and both `ManuallyDrop` and `Pin`
             //         are `#[repr(transparent)]` so this is safe.
@@ -439,11 +477,11 @@ pub fn init_unique_rc<T, E, F>(
     f: F,
 ) -> Result<Pin<UniqueRc<T>>, E>
 where
-    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    F: PinInitializer<T, E>,
 {
     // SAFETY: See `init_box`.
     let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
-    match f(unsafe { PinInit::new(&mut ptr) }) {
+    match f.init(unsafe { PinInit::new(&mut ptr) }) {
         Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
         Err(err) => {
             let err = err.into_inner();
@@ -462,11 +500,11 @@ pub fn init_unique_arc<T, E, F>(
     f: F,
 ) -> Result<Pin<UniqueArc<T>>, E>
 where
-    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    F: PinInitializer<T, E>,
 {
     // SAFETY: See `init_box`.
     let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
-    match f(unsafe { PinInit::new(&mut ptr) }) {
+    match f.init(unsafe { PinInit::new(&mut ptr) }) {
         Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
         Err(err) => {
             let err = err.into_inner();
@@ -482,7 +520,7 @@ where
 #[inline]
 pub fn new_box<T, E, F>(f: F) -> Result<Pin<Box<T>>, E>
 where
-    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    F: PinInitializer<T, E>,
 {
     init_box(Box::pin(MaybeUninit::uninit()), f)
 }
@@ -493,7 +531,7 @@ where
 #[inline]
 pub fn new_unique_rc<T, E, F>(f: F) -> Result<Pin<UniqueRc<T>>, E>
 where
-    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    F: PinInitializer<T, E>,
 {
     init_unique_rc(UniqueRc::new_uninit().into(), f)
 }
@@ -504,7 +542,7 @@ where
 #[inline]
 pub fn new_unique_arc<T, E, F>(f: F) -> Result<Pin<UniqueArc<T>>, E>
 where
-    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    F: PinInitializer<T, E>,
 {
     init_unique_arc(UniqueArc::new_uninit().into(), f)
 }
@@ -515,7 +553,7 @@ where
 #[inline]
 pub fn new_rc<T, E, F>(f: F) -> Result<Pin<Rc<T>>, E>
 where
-    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    F: PinInitializer<T, E>,
 {
     Ok(UniqueRc::shareable_pin(new_unique_rc(f)?))
 }
@@ -526,7 +564,7 @@ where
 #[inline]
 pub fn new_arc<T, E, F>(f: F) -> Result<Pin<Arc<T>>, E>
 where
-    F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+    F: PinInitializer<T, E>,
 {
     Ok(UniqueArc::shareable_pin(new_unique_arc(f)?))
 }
@@ -563,7 +601,7 @@ pub mod __private {
         #[inline]
         pub fn init<F, E>(self: Pin<&mut Self>, f: F) -> Result<Pin<&mut T>, E>
         where
-            F: for<'b> FnOnce(PinInit<'b, T>) -> PinInitResult<'b, T, E>,
+            F: PinInitializer<T, E>,
         {
             struct PanicGuard;
             impl Drop for PanicGuard {
@@ -581,7 +619,7 @@ pub mod __private {
             // cannot drop nor assume_init, and we cannot leak memory on stack. So
             // the only sensible action would be to abort (with double-panic).
             let g = PanicGuard;
-            let res = f(unsafe { PinInit::new(&mut this.0) });
+            let res = f.init(unsafe { PinInit::new(&mut this.0) });
             mem::forget(g);
 
             match res {
@@ -654,11 +692,11 @@ pub mod __private {
         #[inline]
         pub fn __next<E, F>(mut self, f: F) -> Result<ValueBuilder<'this, W>, PinInitErr<'this, E>>
         where
-            F: for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, E>,
+            F: PinInitializer<T, E>,
         {
             // This is okay because we only deal with #[repr(transparent)] structs here.
             let ptr = self.0.get_mut().as_mut_ptr() as *mut MaybeUninit<T>;
-            match f(unsafe { PinInit::new(&mut *ptr) }) {
+            match f.init(unsafe { PinInit::new(&mut *ptr) }) {
                 Ok(_) => Ok(ValueBuilder(unsafe { self.0.init_ok() })),
                 Err(err) => Err(self.0.init_err(err.into_inner())),
             }
@@ -671,7 +709,7 @@ pub mod __private {
 /// ```
 /// # include!("doctest.rs");
 /// # fn main() {
-/// init_stack!(p = NeedPin::new);
+/// init_stack!(p = NeedPin::new());
 /// // Now `p` is a `Result<Pin<&mut NeedPin>, Infallible>`.
 /// # }
 /// ```
@@ -687,7 +725,7 @@ pub mod __private {
 ///     b: usize,
 /// }
 /// init_stack!(p = init_pin!(ManyPin {
-///     a: NeedPin::new,
+///     a: NeedPin::new(),
 ///     b: 0,
 /// }));
 /// # }
@@ -719,7 +757,7 @@ macro_rules! init_stack {
 ///     b: usize,
 /// }
 /// let p = new_box(init_pin!(ManyPin {
-///     a: NeedPin::new,
+///     a: NeedPin::new(),
 ///     b: 0,
 /// }));
 /// # }
@@ -732,7 +770,7 @@ macro_rules! init_stack {
 /// #[pin_init]
 /// struct ManyPin(#[pin] NeedPin, usize);
 /// let p = new_box(init_pin!(ManyPin(
-///     NeedPin::new,
+///     NeedPin::new(),
 ///     0,
 /// )));
 /// # }
@@ -762,7 +800,7 @@ macro_rules! init_stack {
 /// #     b: usize,
 /// # }
 /// let p = new_box(init_pin!(try Infallible => ManyPin {
-///     a:? NeedPin::new,
+///     a:? NeedPin::new(),
 ///     b: 0,
 /// }));
 /// # }
@@ -786,9 +824,9 @@ macro_rules! init_stack {
 ///     b: ManyPin,
 /// }
 /// let p = new_box(init_pin!(TooManyPin {
-///     a: NeedPin::new,
+///     a: NeedPin::new(),
 ///     b: init_pin!(ManyPin {
-///         a: NeedPin::new,
+///         a: NeedPin::new(),
 ///         b: 0,
 ///     }),
 /// }));
@@ -808,7 +846,7 @@ macro_rules! init_stack {
 /// impl ManyPin {
 ///     pub fn new(this: PinInit<'_, Self>) -> PinInitResult<'_, Self, Infallible> {
 ///         this.init(init_pin!(ManyPin {
-///             a: NeedPin::new,
+///             a: NeedPin::new(),
 ///             b: 1,
 ///         }))
 ///     }
@@ -823,64 +861,64 @@ macro_rules! init_stack {
 /// use core::cell::UnsafeCell;
 /// use core::cell::Cell;
 /// init_pin!(try Infallible => PhantomPinned);
-/// init_pin!(UnsafeCell(NeedPin::new));
-/// init_pin!(Cell(NeedPin::new));
+/// init_pin!(UnsafeCell(NeedPin::new()));
+/// init_pin!(Cell(NeedPin::new()));
 /// # }
 /// ```
 #[macro_export]
 macro_rules! init_pin {
     // try Error => Struct {}
     (try $err:ty => $ty:ident { $($tt:tt)* }) => {{
-        |this| -> $crate::PinInitResult<'_, _, $err> {
+        $crate::init_from_closure(|this| -> $crate::PinInitResult<'_, _, $err> {
             use $crate::PinInitable;
             let builder = $ty::__pin_init_builder(this);
             $crate::__init_pin_internal!(@named builder => $($tt)*,);
             Ok(builder.__init_ok())
-        }
+        })
     }};
     // try Error => Struct()
     (try $err:ty => $ty:ident ( $($tt:tt)* )) => {{
-        |this| -> $crate::PinInitResult<'_, _, $err> {
+        $crate::init_from_closure(|this| -> $crate::PinInitResult<'_, _, $err> {
             use $crate::PinInitable;
             let builder = $ty::__pin_init_builder(this);
             $crate::__init_pin_internal!(@unnamed builder => $($tt)*,);
             Ok(builder.__init_ok())
-        }
+        })
     }};
     // try Error => Struct
     (try $err:ty => $ty:ident) => {{
-        |this| -> $crate::PinInitResult<'_, _, $err> {
+        $crate::init_from_closure(|this| -> $crate::PinInitResult<'_, _, $err> {
             use $crate::PinInitable;
             let builder = $ty::__pin_init_builder(this);
             Ok(builder.__init_ok())
-        }
+        })
     }};
 
     // Struct {}
     ($ty:ident { $($tt:tt)* }) => {{
-        |this| {
+        $crate::init_from_closure(|this| {
             use $crate::PinInitable;
             let builder = $ty::__pin_init_builder(this);
             $crate::__init_pin_internal!(@named builder => $($tt)*,);
             Ok(builder.__init_ok())
-        }
+        })
     }};
     // Struct()
     ($ty:ident ( $($tt:tt)* )) => {{
-        |this| {
+        $crate::init_from_closure(|this| {
             use $crate::PinInitable;
             let builder = $ty::__pin_init_builder(this);
             $crate::__init_pin_internal!(@unnamed builder => $($tt)*,);
             Ok(builder.__init_ok())
-        }
+        })
     }};
     // Struct
     ($ty:ident) => {{
-        |this| {
+        $crate::init_from_closure(|this| {
             use $crate::PinInitable;
             let builder = $ty::__pin_init_builder(this);
             Ok(builder.__init_ok())
-        }
+        })
     }};
 }
 

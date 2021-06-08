@@ -23,6 +23,7 @@ impl Drop for RawMutex {
     fn drop(&mut self) {
         // Thanks to pin_init, we are certain that self is initialized already.
         unsafe {
+            println!("drop");
             libc::pthread_mutex_destroy(self.pthread.get());
         }
     }
@@ -30,32 +31,34 @@ impl Drop for RawMutex {
 
 impl RawMutex {
     // Use pin_init's abstraction to provide a safe initializaiton.
-    pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Self, Error> {
-        let ptr = this.get_mut().as_mut_ptr() as *mut libc::pthread_mutex_t;
-        unsafe {
-            ptr.write(libc::PTHREAD_MUTEX_INITIALIZER);
+    pub fn new() -> impl PinInitializer<Self, Error> {
+        init_from_closure(|mut this| {
+            let ptr = this.get_mut().as_mut_ptr() as *mut libc::pthread_mutex_t;
+            unsafe {
+                ptr.write(libc::PTHREAD_MUTEX_INITIALIZER);
 
-            let mut attr = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
-            let ret = libc::pthread_mutexattr_init(attr.as_mut_ptr());
-            if ret != 0 {
-                return Err(this.init_err(Error::from_raw_os_error(ret)));
-            }
+                let mut attr = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
+                let ret = libc::pthread_mutexattr_init(attr.as_mut_ptr());
+                if ret != 0 {
+                    return Err(this.init_err(Error::from_raw_os_error(ret)));
+                }
 
-            let ret =
-                libc::pthread_mutexattr_settype(attr.as_mut_ptr(), libc::PTHREAD_MUTEX_NORMAL);
-            if ret != 0 {
+                let ret =
+                    libc::pthread_mutexattr_settype(attr.as_mut_ptr(), libc::PTHREAD_MUTEX_NORMAL);
+                if ret != 0 {
+                    libc::pthread_mutexattr_destroy(attr.as_mut_ptr());
+                    return Err(this.init_err(Error::from_raw_os_error(ret)));
+                }
+
+                let ret = libc::pthread_mutex_init(ptr, attr.as_ptr());
                 libc::pthread_mutexattr_destroy(attr.as_mut_ptr());
-                return Err(this.init_err(Error::from_raw_os_error(ret)));
-            }
+                if ret != 0 {
+                    return Err(this.init_err(Error::from_raw_os_error(ret)));
+                }
 
-            let ret = libc::pthread_mutex_init(ptr, attr.as_ptr());
-            libc::pthread_mutexattr_destroy(attr.as_mut_ptr());
-            if ret != 0 {
-                return Err(this.init_err(Error::from_raw_os_error(ret)));
+                Ok(this.init_ok())
             }
-
-            Ok(this.init_ok())
-        }
+        })
     }
 
     pub fn lock(&self) -> RawMutexGuard<'_> {
@@ -83,6 +86,9 @@ struct Mutex<T> {
     data: UnsafeCell<T>,
 }
 
+unsafe impl<T: Send> Send for Mutex<T> {}
+unsafe impl<T: Send> Sync for Mutex<T> {}
+
 struct MutexGuard<'a, T>(RawMutexGuard<'a>, &'a mut T);
 
 impl<'a, T> Deref for MutexGuard<'a, T> {
@@ -99,18 +105,14 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
 }
 
 impl<T> Mutex<T> {
-    pub fn new<F>(this: PinInit<'_, Self>, value: F) -> PinInitResult<'_, Self, Error>
+    pub fn new<F>(value: F) -> impl PinInitializer<Self, Error>
     where
-        F: for<'a> FnOnce(PinInit<'_, T>) -> PinInitResult<'_, T, Error>,
+        F: PinInitializer<T, Error>,
     {
-        this.init(init_pin!(Mutex {
-            mutex: RawMutex::new,
+        init_pin!(Mutex {
+            mutex: RawMutex::new(),
             data: init_pin!(UnsafeCell(value)),
-        }))
-    }
-
-    pub fn new_with_value(this: PinInit<'_, Self>, value: T) -> PinInitResult<'_, Self, Error> {
-        Self::new(this, |s| Ok(s.init_with_value(value)))
+        })
     }
 
     pub fn lock(&self) -> Pin<MutexGuard<'_, T>> {
@@ -140,7 +142,7 @@ struct TwoMutex {
 
 fn main() {
     {
-        let m = new_box(|s| Mutex::new_with_value(s, 1)).unwrap();
+        let m = new_box(Mutex::new(1)).unwrap();
         println!("{}", *m.lock());
         *m.lock() = 2;
         println!("{}", *m.lock());
@@ -153,8 +155,8 @@ fn main() {
         // created and initialized on the stack.
         init_stack!(
             m = init_pin!(TwoMutex {
-                a: |s| Mutex::new_with_value(s, 1),
-                b: |s| Mutex::new(s, init_pin!(Pinned(1, init_pin!(PhantomPinned))))
+                a: Mutex::new(1),
+                b: Mutex::new(Pinned(1, PhantomPinned))
             })
         );
         let mut m = m.unwrap();

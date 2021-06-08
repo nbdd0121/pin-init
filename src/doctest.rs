@@ -1,10 +1,10 @@
 // Helpers for documentation tests.
 
+use pin_init::*;
 use std::convert::Infallible;
 use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::ptr;
-use pin_init::*;
 
 pub struct NeedPin {
     address: *const NeedPin,
@@ -18,9 +18,11 @@ impl NeedPin {
 }
 
 impl NeedPin {
-    pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Self, Infallible> {
-        let v = this.get_mut().as_mut_ptr();
-        unsafe { *ptr::addr_of_mut!((*v).address) = v };
-        Ok(unsafe { this.init_ok() })
+    pub fn new() -> impl PinInitializer<Self, Infallible> {
+        init_from_closure(|mut this: PinInit<'_, Self>| {
+            let v = this.get_mut().as_mut_ptr();
+            unsafe { *ptr::addr_of_mut!((*v).address) = v };
+            Ok(unsafe { this.init_ok() })
+        })
     }
 }

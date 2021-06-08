@@ -246,14 +246,14 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                     #(,#ty_generics)*
                     #typestate_ty_post
                 >, ::pin_init::PinInitErr<#this_lifetime, #error_ident>>
-                    where #fn_ident: for<'__a> ::core::ops::FnOnce(::pin_init::PinInit<'__a, #ty>) -> ::pin_init::PinInitResult<'__a, #ty, #error_ident>
+                    where #fn_ident: ::pin_init::PinInitializer<#ty, #error_ident>
                 {
                     let base = self.ptr.get_mut().as_mut_ptr();
                     // SAFETY: No actual dereference
                     let ptr = unsafe { ::core::ptr::addr_of_mut!((*base).#field_name_current) };
                     // SAFETY: We will act according to the return value of `f`.
                     let pin = unsafe { ::pin_init::PinInit::new(&mut *(ptr as *mut ::core::mem::MaybeUninit<_>)) };
-                    match f(pin) {
+                    match f.init(pin) {
                         Ok(_) => (),
                         Err(err) => return Err(self.__init_err(err.into_inner())),
                     }

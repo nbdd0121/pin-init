@@ -1,6 +1,6 @@
 [package]
 name = "pin-init"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Gary Guo <gary@garyguo.net>"]
 edition = "2018"
 license = "Apache-2.0 OR MIT"
@@ -15,7 +15,7 @@ Safe pinned-initialization in Rust
 members = ["pin-init-internal"]
 
 [dependencies]
-pin-init-internal = { version = "=0.1.0",  path = "pin-init-internal" }
+pin-init-internal = { version = "=0.2.0",  path = "pin-init-internal" }
 
 [dev-dependencies]
 libc = "0.2"
