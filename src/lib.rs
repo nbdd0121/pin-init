@@ -201,6 +201,132 @@ mod unique;
 /// # fn main() {}
 /// ```
 pub use pin_init_internal::pin_init;
+
+/// Create and pin-initialize a struct.
+///
+/// The type to create need to be marked with [`#[pin_init]`](pin_init).
+///
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// struct ManyPin {
+///     #[pin]
+///     a: NeedPin,
+///     b: usize,
+/// }
+/// let p = new_box(init_pin!(ManyPin {
+///     a: NeedPin::new(),
+///     b: 0,
+/// }));
+/// # }
+/// ```
+///
+/// Also works for tuple-structs:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// struct ManyPin(#[pin] NeedPin, usize);
+/// let p = new_box(init_pin!(ManyPin(
+///     NeedPin::new(),
+///     0,
+/// )));
+/// # }
+/// ```
+///
+/// You could apply it to unit-structs (but probably not very useful):
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// struct NoPin;
+/// let p: Result<_, Infallible> = new_box(init_pin!(NoPin));
+/// # }
+/// ```
+///
+/// By default, no conversions are made for errors, as otherwise type inference
+/// may fail (like using the ? operator in a closure). If you need error conversion,
+/// you can use [`PinInitializer::map_err`].
+/// You may need type annotation or [`specify_err`] to avoid type inference failure.
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// #[pin_init]
+/// # struct ManyPin {
+/// #     #[pin]
+/// #     a: NeedPin,
+/// #     b: usize,
+/// # }
+/// let p: Result<Pin<Box<_>>, Infallible> = new_box(init_pin!(ManyPin {
+///     a: NeedPin::new().map_err(Into::into),
+///     b: 0,
+/// }));
+/// # }
+/// ```
+///
+/// `init_pin!` can be used for nested initialization as well:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// # #[pin_init]
+/// # struct ManyPin {
+/// #     #[pin]
+/// #     a: NeedPin,
+/// #     b: usize,
+/// # }
+/// #[pin_init]
+/// struct TooManyPin {
+///     #[pin]
+///     a: NeedPin,
+///     #[pin]
+///     b: ManyPin,
+/// }
+/// let p = new_box(init_pin!(TooManyPin {
+///     a: NeedPin::new(),
+///     // Nested by default. To opt out write `b: #[unpin] NeedPin {`.
+///     b: ManyPin {
+///         a: NeedPin::new(),
+///         b: 0,
+///     },
+/// }));
+/// # }
+/// ```
+///
+/// If you want to define a constructor, you can write like this:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// # #[pin_init]
+/// # struct ManyPin {
+/// #     #[pin]
+/// #     a: NeedPin,
+/// #     b: usize,
+/// # }
+/// impl ManyPin {
+///     pub fn new() -> impl PinInitializer<Self, Infallible> {
+///         init_pin!(ManyPin {
+///             a: NeedPin::new(),
+///             b: 1,
+///         })
+///     }
+/// }
+/// # }
+/// ```
+///
+/// `init_pin!` can also initialize some std types:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() {
+/// use core::cell::UnsafeCell;
+/// use core::cell::Cell;
+/// specify_err::<_, Infallible, _>(init_pin!(PhantomPinned));
+/// init_pin!(UnsafeCell(NeedPin::new()));
+/// init_pin!(Cell(NeedPin::new()));
+/// # }
+/// ```
+pub use pin_init_internal::init_pin;
+
 #[cfg(feature = "alloc")]
 pub use unique::{UniqueArc, UniqueRc};
 
@@ -408,14 +534,55 @@ pub type PinInitResult<'a, T, E> = Result<PinInitOk<'a, T>, PinInitErr<'a, E>>;
 ///
 /// A blanket implementation `impl<T, E> PinInitializer<T, E> for T` is provided for all types, so
 /// a non-pinned value can be used directly for pin-initialization.
-pub trait PinInitializer<T, E> {
+pub trait PinInitializer<T, E>: Sized {
+    /// Pin-iInitialize `this`.
     fn init<'a>(self, this: PinInit<'a, T>) -> PinInitResult<'a, T, E>;
+
+    /// Maps the error from `E` to `E2`.
+    fn map_err<E2, F>(self, f: F) -> MapErr<T, E, E2, Self, F>
+    where
+        F: FnOnce(E) -> E2,
+    {
+        MapErr {
+            init: self,
+            map: f,
+            marker: PhantomData,
+        }
+    }
 }
 
 impl<T, E> PinInitializer<T, E> for T {
     fn init<'a>(self, this: PinInit<'a, T>) -> PinInitResult<'a, T, E> {
         Ok(this.init_with_value(self))
     }
+}
+
+#[doc(hidden)]
+pub struct MapErr<T, E, E2, I, F> {
+    init: I,
+    map: F,
+    marker: PhantomData<(fn(T) -> E, fn(E) -> E2)>,
+}
+
+impl<T, E, E2, I, F> PinInitializer<T, E2> for MapErr<T, E, E2, I, F>
+where
+    I: PinInitializer<T, E>,
+    F: FnOnce(E) -> E2,
+{
+    fn init<'a>(self, this: PinInit<'a, T>) -> PinInitResult<'a, T, E2> {
+        match self.init.init(this) {
+            Ok(v) => Ok(v),
+            Err(v) => Err(v.map(self.map)),
+        }
+    }
+}
+
+/// Specify an Error type if type inference cannot infer it.
+pub fn specify_err<T, E, I>(init: I) -> impl PinInitializer<T, E>
+where
+    I: PinInitializer<T, E>,
+{
+    init
 }
 
 /// Construct a [`PinInitializer<T, E>`] with a closure.
@@ -739,220 +906,6 @@ pub mod __private {
 macro_rules! init_stack {
     ($var:ident = $init:expr) => {
         let mut storage = $crate::__private::StackWrapper::new();
-        let $var = unsafe { Pin::new_unchecked(&mut storage) }.init($init);
-    };
-}
-
-/// Create and pin-initialize a struct.
-///
-/// The type to create need to be marked with [`#[pin_init]`](pin_init).
-///
-/// ```
-/// # include!("doctest.rs");
-/// # fn main() {
-/// #[pin_init]
-/// struct ManyPin {
-///     #[pin]
-///     a: NeedPin,
-///     b: usize,
-/// }
-/// let p = new_box(init_pin!(ManyPin {
-///     a: NeedPin::new(),
-///     b: 0,
-/// }));
-/// # }
-/// ```
-///
-/// Also works for tuple-structs:
-/// ```
-/// # include!("doctest.rs");
-/// # fn main() {
-/// #[pin_init]
-/// struct ManyPin(#[pin] NeedPin, usize);
-/// let p = new_box(init_pin!(ManyPin(
-///     NeedPin::new(),
-///     0,
-/// )));
-/// # }
-/// ```
-///
-/// You could apply it to unit-structs (but probably not very useful):
-/// ```
-/// # include!("doctest.rs");
-/// # fn main() {
-/// #[pin_init]
-/// struct NoPin;
-/// let p: Result<_, Infallible> = new_box(init_pin!(NoPin));
-/// # }
-/// ```
-///
-/// By default, no conversions are made for errors, as otherwise type inference
-/// may fail (like using the ? operator in a closure). If you need error conversion,
-/// you need to add a `?` before expression. You can add `try Error =>` to specify
-/// the error to avoid type inference failure.
-/// ```
-/// # include!("doctest.rs");
-/// # fn main() {
-/// #[pin_init]
-/// # struct ManyPin {
-/// #     #[pin]
-/// #     a: NeedPin,
-/// #     b: usize,
-/// # }
-/// let p = new_box(init_pin!(try Infallible => ManyPin {
-///     a:? NeedPin::new(),
-///     b: 0,
-/// }));
-/// # }
-/// ```
-///
-/// `init_pin!` can be used for nested initialization as well:
-/// ```
-/// # include!("doctest.rs");
-/// # fn main() {
-/// #[pin_init]
-/// # struct ManyPin {
-/// #     #[pin]
-/// #     a: NeedPin,
-/// #     b: usize,
-/// # }
-/// #[pin_init]
-/// struct TooManyPin {
-///     #[pin]
-///     a: NeedPin,
-///     #[pin]
-///     b: ManyPin,
-/// }
-/// let p = new_box(init_pin!(TooManyPin {
-///     a: NeedPin::new(),
-///     b: init_pin!(ManyPin {
-///         a: NeedPin::new(),
-///         b: 0,
-///     }),
-/// }));
-/// # }
-/// ```
-///
-/// If you want to define a constructor, you can write like this:
-/// ```
-/// # include!("doctest.rs");
-/// # fn main() {
-/// # #[pin_init]
-/// # struct ManyPin {
-/// #     #[pin]
-/// #     a: NeedPin,
-/// #     b: usize,
-/// # }
-/// impl ManyPin {
-///     pub fn new(this: PinInit<'_, Self>) -> PinInitResult<'_, Self, Infallible> {
-///         this.init(init_pin!(ManyPin {
-///             a: NeedPin::new(),
-///             b: 1,
-///         }))
-///     }
-/// }
-/// # }
-/// ```
-///
-/// `init_pin!` can also initialize some std types:
-/// ```
-/// # include!("doctest.rs");
-/// # fn main() {
-/// use core::cell::UnsafeCell;
-/// use core::cell::Cell;
-/// init_pin!(try Infallible => PhantomPinned);
-/// init_pin!(UnsafeCell(NeedPin::new()));
-/// init_pin!(Cell(NeedPin::new()));
-/// # }
-/// ```
-#[macro_export]
-macro_rules! init_pin {
-    // try Error => Struct {}
-    (try $err:ty => $ty:ident { $($tt:tt)* }) => {{
-        $crate::init_from_closure(|this| -> $crate::PinInitResult<'_, _, $err> {
-            use $crate::PinInitable;
-            let builder = $ty::__pin_init_builder(this);
-            $crate::__init_pin_internal!(@named builder => $($tt)*,);
-            Ok(builder.__init_ok())
-        })
-    }};
-    // try Error => Struct()
-    (try $err:ty => $ty:ident ( $($tt:tt)* )) => {{
-        $crate::init_from_closure(|this| -> $crate::PinInitResult<'_, _, $err> {
-            use $crate::PinInitable;
-            let builder = $ty::__pin_init_builder(this);
-            $crate::__init_pin_internal!(@unnamed builder => $($tt)*,);
-            Ok(builder.__init_ok())
-        })
-    }};
-    // try Error => Struct
-    (try $err:ty => $ty:ident) => {{
-        $crate::init_from_closure(|this| -> $crate::PinInitResult<'_, _, $err> {
-            use $crate::PinInitable;
-            let builder = $ty::__pin_init_builder(this);
-            Ok(builder.__init_ok())
-        })
-    }};
-
-    // Struct {}
-    ($ty:ident { $($tt:tt)* }) => {{
-        $crate::init_from_closure(|this| {
-            use $crate::PinInitable;
-            let builder = $ty::__pin_init_builder(this);
-            $crate::__init_pin_internal!(@named builder => $($tt)*,);
-            Ok(builder.__init_ok())
-        })
-    }};
-    // Struct()
-    ($ty:ident ( $($tt:tt)* )) => {{
-        $crate::init_from_closure(|this| {
-            use $crate::PinInitable;
-            let builder = $ty::__pin_init_builder(this);
-            $crate::__init_pin_internal!(@unnamed builder => $($tt)*,);
-            Ok(builder.__init_ok())
-        })
-    }};
-    // Struct
-    ($ty:ident) => {{
-        $crate::init_from_closure(|this| {
-            use $crate::PinInitable;
-            let builder = $ty::__pin_init_builder(this);
-            Ok(builder.__init_ok())
-        })
-    }};
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __init_pin_internal {
-    (@named $builder:ident => $(,)?) => {};
-    (@named $builder:ident => $ident:ident : ? $expr:expr, $($tt:tt)*) => {
-        let $builder = match $builder.$ident($expr) {
-            Ok(v) => v,
-            Err(err) => return Err(err.map(From::from)),
-        };
-        __init_pin_internal!(@named $builder => $($tt)*);
-    };
-    (@named $builder:ident => $ident:ident : $expr:expr, $($tt:tt)*) => {
-        let $builder = match $builder.$ident($expr) {
-            Ok(v) => v,
-            Err(err) => return Err(err),
-        };
-        __init_pin_internal!(@named $builder => $($tt)*);
-    };
-    (@unnamed $builder:ident => $(,)?) => {};
-    (@unnamed $builder:ident => ? $expr:expr, $($tt:tt)*) => {
-        let $builder = match $builder.__next($expr) {
-            Ok(v) => v,
-            Err(err) => return Err(err.map(From::from)),
-        };
-        __init_pin_internal!(@unnamed $builder => $($tt)*);
-    };
-    (@unnamed $builder:ident => $expr:expr, $($tt:tt)*) => {
-        let $builder = match $builder.__next($expr) {
-            Ok(v) => v,
-            Err(err) => return Err(err),
-        };
-        __init_pin_internal!(@unnamed $builder => $($tt)*);
+        let $var = unsafe { Pin::new_unchecked(&mut storage) }.init($crate::init_pin!($init));
     };
 }

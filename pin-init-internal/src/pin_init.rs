@@ -1,8 +1,9 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::{
-    punctuated::Punctuated, Data, DeriveInput, Error, Fields, GenericParam, Generics, ItemStruct,
-    LifetimeDef, Member, Result, TraitBound, TraitBoundModifier, TypeParamBound,
+    punctuated::Punctuated, Attribute, Data, DeriveInput, Error, Expr, ExprCall, ExprPath, Fields,
+    GenericParam, Generics, ItemStruct, LifetimeDef, Member, Result, TraitBound,
+    TraitBoundModifier, TypeParamBound, visit_mut::VisitMut, visit_mut
 };
 
 pub fn pin_init_attr(_attr: TokenStream, input: TokenStream) -> Result<TokenStream> {
@@ -352,4 +353,172 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
 
     let gen = quote!(#(#builder)*);
     Ok(gen)
+}
+
+fn char_has_case(c: char) -> bool {
+    let mut l = c.to_lowercase();
+    let mut u = c.to_uppercase();
+    while let Some(l) = l.next() {
+        match u.next() {
+            Some(u) if l != u => return true,
+            _ => {}
+        }
+    }
+    u.next().is_some()
+}
+
+fn is_camel_case(name: &str) -> bool {
+    let name = name.trim_matches('_');
+    if name.is_empty() {
+        return true;
+    }
+
+    // start with a non-lowercase letter rather than non-uppercase
+    // ones (some scripts don't have a concept of upper/lowercase)
+    !name.chars().next().unwrap().is_lowercase()
+        && !name.contains("__")
+        && !name.chars().collect::<Vec<_>>().windows(2).any(|w| {
+            match w {
+                &[fst, snd] => {
+                    // contains a capitalisable character followed by, or preceded by, an underscore
+                    char_has_case(fst) && snd == '_' || char_has_case(snd) && fst == '_'
+                }
+                _ => false,
+            }
+        })
+}
+
+fn looks_like_tuple_struct_name(path: &ExprPath) -> bool {
+    is_camel_case(&path.path.segments.last().unwrap().ident.to_string())
+}
+
+fn looks_like_tuple_struct_call(call: &ExprCall) -> bool {
+    match &*call.func {
+        Expr::Path(path) => looks_like_tuple_struct_name(path),
+        _ => false,
+    }
+}
+
+fn scan_attribute(attrs: &mut Vec<Attribute>) -> Option<bool> {
+    let mut ret = None;
+    attrs.retain(|a| {
+        if a.path.is_ident("unpin") {
+            ret = Some(false);
+            false
+        } else if a.path.is_ident("pin") {
+            ret = Some(true);
+            false
+        } else {
+            true
+        }
+    });
+    ret
+}
+
+struct InitPinVisit(bool);
+
+impl VisitMut for InitPinVisit {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        match expr {
+            Expr::Path(path)
+                if looks_like_tuple_struct_name(&path) =>
+            {
+                if let Some(v) = scan_attribute(&mut path.attrs) {
+                    self.0 = v;
+                }
+
+                if !self.0 {
+                    return visit_mut::visit_expr_mut(self, expr);
+                }
+
+                *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
+                    ::pin_init::init_from_closure(|this| {
+                        use ::pin_init::PinInitable;
+                        let builder = #path::__pin_init_builder(this);
+                        Ok(builder.__init_ok())
+                    })
+                }).unwrap()
+            }
+            Expr::Call(call)
+                if looks_like_tuple_struct_call(&call) =>
+            {
+                if let Some(v) = scan_attribute(&mut call.attrs) {
+                    self.0 = v;
+                }
+
+                if !self.0 {
+                    // We must not visit call.func otherwise it'll be treated
+                    // as unit struct.
+                    for expr in &mut call.args {
+                        self.visit_expr_mut(expr);
+                    }
+                    return;
+                }
+
+                let path = &call.func;
+
+                let mut builder_segment = Vec::new();
+                for expr in &mut call.args {
+                    self.visit_expr_mut(expr);
+                    builder_segment.push(quote_spanned! {Span::mixed_site()=>
+                        let builder = match builder.__next(#expr) {
+                            Ok(v) => v,
+                            Err(err) => return Err(err),
+                        };
+                    });
+                }
+
+                *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
+                    ::pin_init::init_from_closure(|this| {
+                        use ::pin_init::PinInitable;
+                        let builder = #path::__pin_init_builder(this);
+                        #(#builder_segment)*
+                        Ok(builder.__init_ok())
+                    })
+                }).unwrap()
+            }
+            Expr::Struct(ctor) => {
+                if let Some(v) = scan_attribute(&mut ctor.attrs) {
+                    self.0 = v;
+                }
+
+                if !self.0 {
+                    return visit_mut::visit_expr_mut(self, expr);
+                }
+
+                let path = &ctor.path;
+
+                let mut builder_segment = Vec::new();
+                for field in &mut ctor.fields {
+                    let member = &field.member;
+                    let expr = &mut field.expr;
+                    self.visit_expr_mut(expr);
+                    builder_segment.push(quote_spanned! {Span::mixed_site()=>
+                        let builder = match builder.#member(#expr) {
+                            Ok(v) => v,
+                            Err(err) => return Err(err),
+                        };
+                    });
+                }
+
+                *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
+                    ::pin_init::init_from_closure(|this| {
+                        use ::pin_init::PinInitable;
+                        let builder = #path::__pin_init_builder(this);
+                        #(#builder_segment)*
+                        Ok(builder.__init_ok())
+                    })
+                }).unwrap()
+            }
+            _ => {
+                visit_mut::visit_expr_mut(self, expr);
+            }
+        }
+    }
+}
+
+pub fn init_pin(input: TokenStream) -> Result<TokenStream> {
+    let mut input: Expr = syn::parse2(input)?;
+    InitPinVisit(true).visit_expr_mut(&mut input);
+    Ok(quote!(#input))
 }

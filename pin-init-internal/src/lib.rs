@@ -19,3 +19,10 @@ pub fn pin_init_derive(input: TokenStream) -> TokenStream {
         .unwrap_or_else(Error::into_compile_error)
         .into()
 }
+
+#[proc_macro]
+pub fn init_pin(input: TokenStream) -> TokenStream {
+    pin_init::init_pin(input.into())
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
