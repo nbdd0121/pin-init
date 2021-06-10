@@ -65,32 +65,34 @@ The ultimate goal is:
 
 ## The solution: `pin_init`
 
-This crate provides type `PinInit` and `PinInitResult` as the primitives
+This crate provides type `PinUninit` and `InitResult` as the primitives
 for safe pinned-initialization. Details about these types can be found in
 their respective documentation, but in a nutshell, instead of having a (fallible)
 constructor of type `FnOnce() -> Result<T, Err>` like a normal unpinned type,
 `pin_init` expect you to present a constructor of type
-`for<'a> FnOnce(PinInit<'a, T>) -> PinInitResult<'a, T, Err>`.
+`for<'a> FnOnce(PinUninit<'a, T>) -> InitResult<'a, T, Err>`.
 
 `NeedPin::new` could be define like this:
 ```rust
 impl NeedPin {
-    pub fn new(mut this: PinInit<'_, Self>) -> PinInitResult<'_, Infallible> {
-        let v = this.get_mut().as_mut_ptr();
-        unsafe { *core::ptr::addr_of_mut!((*v).address) = v };
-        Ok(unsafe { this.init_ok() })
+    pub fn new() -> impl Init<Self, Infallible> {
+        init_from_closure(|mut this: PinUninit<'_, Self>| -> InitResult<'_, Self, Infallible> {
+            let v = this.get_mut().as_mut_ptr();
+            unsafe { *ptr::addr_of_mut!((*v).address) = v };
+            Ok(unsafe { this.init_ok() })
+        })
     }
 }
 ```
 
-With Rust's affine type system and borrow checker, the `PinInitResult` is
+With Rust's affine type system and borrow checker, the `InitResult` is
 essentially a certificate about whether the type is initialized or not.
 `NeedPin` can now be easily initialized:
 ```rust
 // In a box
-let p: Box<Pin<NeedPin>> = pin_init::new_box(NeedPin::new).unwrap();
+let p: Pin<Box<NeedPin>> = pin_init::new_box(NeedPin::new()).unwrap();
 // On the stack
-init_stack!(p = NeedPin::new);
+init_stack!(p = NeedPin::new());
 let p: Pin<&mut NeedPin> = p.unwrap();
 ```
 
@@ -114,9 +116,9 @@ struct TooManyPin {
     b: ManyPin,
 }
 let p = new_box(init_pin!(TooManyPin {
-    a: NeedPin::new,
-    b: init_pin!(ManyPin {
-        a: NeedPin::new,
+    a: NeedPin::new(),
+    b: ManyPin {
+        a: NeedPin::new(),
         b: 0,
     }),
 }));

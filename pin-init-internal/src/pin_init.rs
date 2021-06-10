@@ -1,9 +1,9 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::{
-    punctuated::Punctuated, Attribute, Data, DeriveInput, Error, Expr, ExprCall, ExprPath, Fields,
-    GenericParam, Generics, ItemStruct, LifetimeDef, Member, Result, TraitBound,
-    TraitBoundModifier, TypeParamBound, visit_mut::VisitMut, visit_mut
+    punctuated::Punctuated, visit_mut, visit_mut::VisitMut, Attribute, Data, DeriveInput, Error,
+    Expr, ExprCall, ExprPath, Fields, GenericParam, Generics, ItemStruct, LifetimeDef, Member,
+    Result, TraitBound, TraitBoundModifier, TypeParamBound,
 };
 
 pub fn pin_init_attr(_attr: TokenStream, input: TokenStream) -> Result<TokenStream> {
@@ -181,7 +181,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                 #(,#generics)*
                 #typestate_impl
             > #where_clause {
-                ptr: ::pin_init::PinInit<#this_lifetime, #ident<#(#ty_generics),*>>,
+                ptr: ::pin_init::PinUninit<#this_lifetime, #ident<#(#ty_generics),*>>,
             }
 
             #[allow(nonstandard_style)]
@@ -195,7 +195,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                 #typestate_ty
             > #where_clause {
                 #[inline]
-                fn __init_err<#error_ident>(mut self, err: #error_ident) -> ::pin_init::PinInitErr<#this_lifetime, #error_ident> {
+                fn __init_err<#error_ident>(mut self, err: #error_ident) -> ::pin_init::InitErr<#this_lifetime, #error_ident> {
                     let base = self.ptr.get_mut().as_mut_ptr();
                     #drop_impl
                     self.ptr.init_err(err)
@@ -246,14 +246,14 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                     #this_lifetime
                     #(,#ty_generics)*
                     #typestate_ty_post
-                >, ::pin_init::PinInitErr<#this_lifetime, #error_ident>>
-                    where #fn_ident: ::pin_init::PinInitializer<#ty, #error_ident>
+                >, ::pin_init::InitErr<#this_lifetime, #error_ident>>
+                    where #fn_ident: ::pin_init::Init<#ty, #error_ident>
                 {
                     let base = self.ptr.get_mut().as_mut_ptr();
                     // SAFETY: No actual dereference
                     let ptr = unsafe { ::core::ptr::addr_of_mut!((*base).#field_name_current) };
                     // SAFETY: We will act according to the return value of `f`.
-                    let pin = unsafe { ::pin_init::PinInit::new(&mut *(ptr as *mut ::core::mem::MaybeUninit<_>)) };
+                    let pin = unsafe { ::pin_init::PinUninit::new(&mut *(ptr as *mut ::core::mem::MaybeUninit<_>)) };
                     match f.init(pin) {
                         Ok(_) => (),
                         Err(err) => return Err(self.__init_err(err.into_inner())),
@@ -267,7 +267,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                     #this_lifetime
                     #(,#ty_generics)*
                     #typestate_ty_post
-                >, ::pin_init::PinInitErr<#this_lifetime, #error_ident>>
+                >, ::pin_init::InitErr<#this_lifetime, #error_ident>>
                 {
                     let base = self.ptr.get_mut().as_mut_ptr();
                     unsafe {
@@ -323,7 +323,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                 #typestate_ty_post
             > #where_clause {
                 #[inline]
-                pub fn __init_ok(mut self) -> ::pin_init::PinInitOk<#this_lifetime, #ident<#(#ty_generics),*>>{
+                pub fn __init_ok(mut self) -> ::pin_init::InitOk<#this_lifetime, #ident<#(#ty_generics),*>>{
                     unsafe { self.ptr.init_ok() }
                 }
             }
@@ -332,7 +332,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
             impl<
                 #this_lifetime
                 #(,#generics)*
-            > ::pin_init::PinInitable<#this_lifetime> for #ident<#(#ty_generics),*> #where_clause {
+            > ::pin_init::Initable<#this_lifetime> for #ident<#(#ty_generics),*> #where_clause {
                 #[doc(hidden)]
                 type __PinInitBuilder = #builder_ident <
                     #this_lifetime
@@ -343,7 +343,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                 #[doc(hidden)]
                 #[inline]
                 fn __pin_init_builder(
-                    this: ::pin_init::PinInit<#this_lifetime, Self>,
+                    this: ::pin_init::PinUninit<#this_lifetime, Self>,
                 ) -> Self::__PinInitBuilder {
                     #builder_ident { ptr: this }
                 }
@@ -420,9 +420,7 @@ struct InitPinVisit(bool);
 impl VisitMut for InitPinVisit {
     fn visit_expr_mut(&mut self, expr: &mut Expr) {
         match expr {
-            Expr::Path(path)
-                if looks_like_tuple_struct_name(&path) =>
-            {
+            Expr::Path(path) if looks_like_tuple_struct_name(&path) => {
                 if let Some(v) = scan_attribute(&mut path.attrs) {
                     self.0 = v;
                 }
@@ -433,15 +431,14 @@ impl VisitMut for InitPinVisit {
 
                 *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
                     ::pin_init::init_from_closure(|this| {
-                        use ::pin_init::PinInitable;
+                        use ::pin_init::Initable;
                         let builder = #path::__pin_init_builder(this);
                         Ok(builder.__init_ok())
                     })
-                }).unwrap()
+                })
+                .unwrap()
             }
-            Expr::Call(call)
-                if looks_like_tuple_struct_call(&call) =>
-            {
+            Expr::Call(call) if looks_like_tuple_struct_call(&call) => {
                 if let Some(v) = scan_attribute(&mut call.attrs) {
                     self.0 = v;
                 }
@@ -470,12 +467,13 @@ impl VisitMut for InitPinVisit {
 
                 *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
                     ::pin_init::init_from_closure(|this| {
-                        use ::pin_init::PinInitable;
+                        use ::pin_init::Initable;
                         let builder = #path::__pin_init_builder(this);
                         #(#builder_segment)*
                         Ok(builder.__init_ok())
                     })
-                }).unwrap()
+                })
+                .unwrap()
             }
             Expr::Struct(ctor) => {
                 if let Some(v) = scan_attribute(&mut ctor.attrs) {
@@ -503,12 +501,13 @@ impl VisitMut for InitPinVisit {
 
                 *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
                     ::pin_init::init_from_closure(|this| {
-                        use ::pin_init::PinInitable;
+                        use ::pin_init::Initable;
                         let builder = #path::__pin_init_builder(this);
                         #(#builder_segment)*
                         Ok(builder.__init_ok())
                     })
-                }).unwrap()
+                })
+                .unwrap()
             }
             _ => {
                 visit_mut::visit_expr_mut(self, expr);

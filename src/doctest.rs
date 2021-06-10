@@ -18,8 +18,8 @@ impl NeedPin {
 }
 
 impl NeedPin {
-    pub fn new() -> impl PinInitializer<Self, Infallible> {
-        init_from_closure(|mut this: PinInit<'_, Self>| {
+    pub fn new() -> impl Init<Self, Infallible> {
+        init_from_closure(|mut this: PinUninit<'_, Self>| {
             let v = this.get_mut().as_mut_ptr();
             unsafe { *ptr::addr_of_mut!((*v).address) = v };
             Ok(unsafe { this.init_ok() })

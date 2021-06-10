@@ -31,7 +31,7 @@ impl Drop for RawMutex {
 
 impl RawMutex {
     // Use pin_init's abstraction to provide a safe initializaiton.
-    pub fn new() -> impl PinInitializer<Self, Error> {
+    pub fn new() -> impl Init<Self, Error> {
         init_from_closure(|mut this| {
             let ptr = this.get_mut().as_mut_ptr() as *mut libc::pthread_mutex_t;
             unsafe {
@@ -105,9 +105,9 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
 }
 
 impl<T> Mutex<T> {
-    pub fn new<F>(value: F) -> impl PinInitializer<Self, Error>
+    pub fn new<F>(value: F) -> impl Init<Self, Error>
     where
-        F: PinInitializer<T, Error>,
+        F: Init<T, Error>,
     {
         init_pin!(Mutex {
             mutex: RawMutex::new(),
@@ -154,10 +154,10 @@ fn main() {
         // Even complex, nested pinned data structure can be safely
         // created and initialized on the stack.
         init_stack!(
-            m = init_pin!(TwoMutex {
+            m = TwoMutex {
                 a: Mutex::new(1),
                 b: Mutex::new(Pinned(1, PhantomPinned))
-            })
+            }
         );
         let mut m = m.unwrap();
 
