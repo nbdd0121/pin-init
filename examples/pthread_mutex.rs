@@ -142,7 +142,7 @@ struct TwoMutex {
 
 fn main() {
     {
-        let m = new_box(Mutex::new(1)).unwrap();
+        let m = Box::pin_with(Mutex::new(1)).unwrap();
         println!("{}", *m.lock());
         *m.lock() = 2;
         println!("{}", *m.lock());

@@ -107,7 +107,7 @@
 //! # include!("doctest.rs");
 //! # fn main() {
 //! // In a box
-//! let p: Pin<Box<NeedPin>> = pin_init::new_box(NeedPin::new()).unwrap();
+//! let p: Pin<Box<NeedPin>> = Box::pin_with(NeedPin::new()).unwrap();
 //! // On the stack
 //! init_stack!(p = NeedPin::new());
 //! let p: Pin<&mut NeedPin> = p.unwrap();
@@ -135,7 +135,7 @@
 //!     #[pin]
 //!     b: ManyPin,
 //! }
-//! let p = new_box(init_pin!(TooManyPin {
+//! let p = Box::pin_with(init_pin!(TooManyPin {
 //!     a: NeedPin::new(),
 //!     b: ManyPin {
 //!         a: NeedPin::new(),
@@ -147,7 +147,7 @@
 //!
 //! This crate also provides a [`UniqueRc`] and [`UniqueArc`], inspired from servo_arc.
 //! They can be used to mutably initialize `Rc` and `Arc` before they are being shared.
-//! [`new_rc`] and [`new_arc`] are provided which create [`UniqueRc`] and [`UniqueArc`]
+//! [`Rc::pin_with`] and [`Arc::pin_with`] are provided which create [`UniqueRc`] and [`UniqueArc`]
 //! internally, pin-initialize it with given constructor, and convert them to the shareable form.
 //!
 //! This crate allows safe initialization of pinned data structure.
@@ -159,8 +159,8 @@
 //!
 //! [`UniqueRc`]: struct.UniqueRc.html
 //! [`UniqueArc`]: struct.UniqueArc.html
-//! [`new_rc`]: fn.new_rc.html
-//! [`new_arc`]: fn.new_arc.html
+//! [`Rc::pin_with`]: trait.PtrPinWith.html#tymethod.pin_with
+//! [`Arc::pin_with`]: trait.PtrPinWith.html#tymethod.pin_with
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -215,7 +215,7 @@ pub use pin_init_internal::pin_init;
 ///     a: NeedPin,
 ///     b: usize,
 /// }
-/// let p = new_box(init_pin!(ManyPin {
+/// let p = Box::pin_with(init_pin!(ManyPin {
 ///     a: NeedPin::new(),
 ///     b: 0,
 /// }));
@@ -228,7 +228,7 @@ pub use pin_init_internal::pin_init;
 /// # fn main() {
 /// #[pin_init]
 /// struct ManyPin(#[pin] NeedPin, usize);
-/// let p = new_box(init_pin!(ManyPin(
+/// let p = Box::pin_with(init_pin!(ManyPin(
 ///     NeedPin::new(),
 ///     0,
 /// )));
@@ -241,7 +241,7 @@ pub use pin_init_internal::pin_init;
 /// # fn main() {
 /// #[pin_init]
 /// struct NoPin;
-/// let p: Result<_, Infallible> = new_box(init_pin!(NoPin));
+/// let p: Result<_, Infallible> = Box::pin_with(init_pin!(NoPin));
 /// # }
 /// ```
 ///
@@ -258,7 +258,7 @@ pub use pin_init_internal::pin_init;
 /// #     a: NeedPin,
 /// #     b: usize,
 /// # }
-/// let p: Result<Pin<Box<_>>, Infallible> = new_box(init_pin!(ManyPin {
+/// let p: Result<Pin<Box<_>>, Infallible> = Box::pin_with(init_pin!(ManyPin {
 ///     a: NeedPin::new().map_err(Into::into),
 ///     b: 0,
 /// }));
@@ -282,7 +282,7 @@ pub use pin_init_internal::pin_init;
 ///     #[pin]
 ///     b: ManyPin,
 /// }
-/// let p = new_box(init_pin!(TooManyPin {
+/// let p = Box::pin_with(init_pin!(TooManyPin {
 ///     a: NeedPin::new(),
 ///     // Nested by default. To opt out write `b: #[unpin] NeedPin {`.
 ///     b: ManyPin {
@@ -338,7 +338,7 @@ use core::pin::Pin;
 #[cfg(feature = "alloc")]
 use alloc::{boxed::Box, rc::Rc, sync::Arc};
 #[cfg(feature = "alloc")]
-use core::mem::ManuallyDrop;
+use core::{mem::ManuallyDrop, ops::Deref};
 
 /// A pinned, uninitialized pointer.
 ///
@@ -606,54 +606,66 @@ where
     ClosureInit(f, PhantomData)
 }
 
-/// Pin-initialize a box.
+/// Pointer types that can be pin-initialized.
+pub trait PtrInit<T>: Deref<Target = T> + Sized {
+    type Uninit: Deref<Target = MaybeUninit<T>>;
+
+    fn init<E, I>(uninit: Pin<Self::Uninit>, init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>;
+}
+
 #[cfg(feature = "alloc")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
-#[inline]
-pub fn init_box<T, E, F>(x: Pin<Box<MaybeUninit<T>>>, f: F) -> Result<Pin<Box<T>>, E>
-where
-    F: Init<T, E>,
-{
-    // SAFETY: We don't move value out.
-    // If `f` below panics, we might be in a partially initialized state. We
-    // cannot drop nor assume_init, so we can only leak.
-    let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
-    // SAFETY: pinning is guaranteed by `storage`'s pin guarantee.
-    //         We will check the return value, and act accordingly.
-    match f.init(unsafe { PinUninit::new(&mut ptr) }) {
-        Ok(_) => {
-            // SAFETY: We know it's initialized, and both `ManuallyDrop` and `Pin`
-            //         are `#[repr(transparent)]` so this is safe.
-            Ok(unsafe { mem::transmute(ptr) })
-        }
-        Err(err) => {
-            let err = err.into_inner();
-            // SAFETY: We know it's not initialized.
-            drop(ManuallyDrop::into_inner(ptr));
-            Err(err)
+impl<T> PtrInit<T> for Box<T> {
+    type Uninit = Box<MaybeUninit<T>>;
+
+    #[inline]
+    fn init<E, I>(uninit: Pin<Box<MaybeUninit<T>>>, init: I) -> Result<Pin<Box<T>>, E>
+    where
+        I: Init<T, E>,
+    {
+        // SAFETY: We don't move value out.
+        // If `f` below panics, we might be in a partially initialized state. We
+        // cannot drop nor assume_init, so we can only leak.
+        let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(uninit) });
+        // SAFETY: pinning is guaranteed by `storage`'s pin guarantee.
+        //         We will check the return value, and act accordingly.
+        match init.init(unsafe { PinUninit::new(&mut ptr) }) {
+            Ok(_) => {
+                // SAFETY: We know it's initialized, and both `ManuallyDrop` and `Pin`
+                //         are `#[repr(transparent)]` so this is safe.
+                Ok(unsafe { mem::transmute(ptr) })
+            }
+            Err(err) => {
+                let err = err.into_inner();
+                // SAFETY: We know it's not initialized.
+                drop(ManuallyDrop::into_inner(ptr));
+                Err(err)
+            }
         }
     }
 }
 
-/// Pin-initialize a `UniqueRc`.
 #[cfg(feature = "alloc")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
-#[inline]
-pub fn init_unique_rc<T, E, F>(
-    x: Pin<UniqueRc<MaybeUninit<T>>>,
-    f: F,
-) -> Result<Pin<UniqueRc<T>>, E>
-where
-    F: Init<T, E>,
-{
-    // SAFETY: See `init_box`.
-    let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
-    match f.init(unsafe { PinUninit::new(&mut ptr) }) {
-        Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
-        Err(err) => {
-            let err = err.into_inner();
-            drop(ManuallyDrop::into_inner(ptr));
-            Err(err)
+impl<T> PtrInit<T> for UniqueRc<T> {
+    type Uninit = UniqueRc<MaybeUninit<T>>;
+
+    #[inline]
+    fn init<E, I>(uninit: Pin<UniqueRc<MaybeUninit<T>>>, init: I) -> Result<Pin<UniqueRc<T>>, E>
+    where
+        I: Init<T, E>,
+    {
+        // SAFETY: See `init_box`.
+        let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(uninit) });
+        match init.init(unsafe { PinUninit::new(&mut ptr) }) {
+            Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
+            Err(err) => {
+                let err = err.into_inner();
+                drop(ManuallyDrop::into_inner(ptr));
+                Err(err)
+            }
         }
     }
 }
@@ -661,79 +673,92 @@ where
 /// Pin-initialize a `UniqueArc`.
 #[cfg(feature = "alloc")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
-#[inline]
-pub fn init_unique_arc<T, E, F>(
-    x: Pin<UniqueArc<MaybeUninit<T>>>,
-    f: F,
-) -> Result<Pin<UniqueArc<T>>, E>
-where
-    F: Init<T, E>,
-{
-    // SAFETY: See `init_box`.
-    let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(x) });
-    match f.init(unsafe { PinUninit::new(&mut ptr) }) {
-        Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
-        Err(err) => {
-            let err = err.into_inner();
-            drop(ManuallyDrop::into_inner(ptr));
-            Err(err)
+impl<T> PtrInit<T> for UniqueArc<T> {
+    type Uninit = UniqueArc<MaybeUninit<T>>;
+
+    #[inline]
+    fn init<E, I>(uninit: Pin<UniqueArc<MaybeUninit<T>>>, init: I) -> Result<Pin<UniqueArc<T>>, E>
+    where
+        I: Init<T, E>,
+    {
+        // SAFETY: See `init_box`.
+        let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(uninit) });
+        match init.init(unsafe { PinUninit::new(&mut ptr) }) {
+            Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
+            Err(err) => {
+                let err = err.into_inner();
+                drop(ManuallyDrop::into_inner(ptr));
+                Err(err)
+            }
         }
     }
 }
 
-/// Create a new `Box` and pin-initialize it.
-#[cfg(feature = "alloc")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
-#[inline]
-pub fn new_box<T, E, F>(f: F) -> Result<Pin<Box<T>>, E>
-where
-    F: Init<T, E>,
-{
-    init_box(Box::pin(MaybeUninit::uninit()), f)
+/// Pointer types that can be pin-newed.
+pub trait PtrPinWith<T>: Deref<Target = T> + Sized {
+    fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>;
 }
 
-/// Create a new `UniqueRc` and pin-initialize it.
 #[cfg(feature = "alloc")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
-#[inline]
-pub fn new_unique_rc<T, E, F>(f: F) -> Result<Pin<UniqueRc<T>>, E>
-where
-    F: Init<T, E>,
-{
-    init_unique_rc(UniqueRc::new_uninit().into(), f)
+impl<T> PtrPinWith<T> for Box<T> {
+    #[inline]
+    fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+    {
+        PtrInit::init(Box::pin(MaybeUninit::uninit()), init)
+    }
 }
 
-/// Create a new `UniqueArc` and pin-initialize it.
 #[cfg(feature = "alloc")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
-#[inline]
-pub fn new_unique_arc<T, E, F>(f: F) -> Result<Pin<UniqueArc<T>>, E>
-where
-    F: Init<T, E>,
-{
-    init_unique_arc(UniqueArc::new_uninit().into(), f)
+impl<T> PtrPinWith<T> for UniqueRc<T> {
+    #[inline]
+    fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+    {
+        PtrInit::init(UniqueRc::new_uninit().into(), init)
+    }
 }
 
-/// Create a new `Rc` and pin-initialize it.
 #[cfg(feature = "alloc")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
-#[inline]
-pub fn new_rc<T, E, F>(f: F) -> Result<Pin<Rc<T>>, E>
-where
-    F: Init<T, E>,
-{
-    Ok(UniqueRc::shareable_pin(new_unique_rc(f)?))
+impl<T> PtrPinWith<T> for UniqueArc<T> {
+    #[inline]
+    fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+    {
+        PtrInit::init(UniqueArc::new_uninit().into(), init)
+    }
 }
 
-/// Create a new `Arc` and pin-initialize it.
 #[cfg(feature = "alloc")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
-#[inline]
-pub fn new_arc<T, E, F>(f: F) -> Result<Pin<Arc<T>>, E>
-where
-    F: Init<T, E>,
-{
-    Ok(UniqueArc::shareable_pin(new_unique_arc(f)?))
+impl<T> PtrPinWith<T> for Rc<T> {
+    #[inline]
+    fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+    {
+        Ok(UniqueRc::shareable_pin(UniqueRc::pin_with(init)?))
+    }
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+impl<T> PtrPinWith<T> for Arc<T> {
+    #[inline]
+    fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+    {
+        Ok(UniqueArc::shareable_pin(UniqueArc::pin_with(init)?))
+    }
 }
 
 /// Types that can be constructed using `init_pin`.
