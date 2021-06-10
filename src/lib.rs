@@ -1,6 +1,9 @@
 #![no_std]
 #![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![warn(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::should_implement_trait)]
+#![allow(clippy::needless_lifetimes)]
 
 //! Safe pinned-initialization in Rust.
 //!
@@ -561,6 +564,7 @@ impl<T, E> Init<T, E> for T {
 pub struct MapErr<T, E, E2, I, F> {
     init: I,
     map: F,
+    #[allow(clippy::type_complexity)]
     marker: PhantomData<(fn(T) -> E, fn(E) -> E2)>,
 }
 

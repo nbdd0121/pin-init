@@ -356,9 +356,9 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
 }
 
 fn char_has_case(c: char) -> bool {
-    let mut l = c.to_lowercase();
+    let l = c.to_lowercase();
     let mut u = c.to_uppercase();
-    while let Some(l) = l.next() {
+    for l in l {
         match u.next() {
             Some(u) if l != u => return true,
             _ => {}
@@ -378,8 +378,8 @@ fn is_camel_case(name: &str) -> bool {
     !name.chars().next().unwrap().is_lowercase()
         && !name.contains("__")
         && !name.chars().collect::<Vec<_>>().windows(2).any(|w| {
-            match w {
-                &[fst, snd] => {
+            match *w {
+                [fst, snd] => {
                     // contains a capitalisable character followed by, or preceded by, an underscore
                     char_has_case(fst) && snd == '_' || char_has_case(snd) && fst == '_'
                 }
