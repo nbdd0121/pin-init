@@ -713,7 +713,7 @@ impl<T> PtrPinWith<T> for Box<T> {
     where
         I: Init<T, E>,
     {
-        PtrInit::init(Box::pin(MaybeUninit::uninit()), init)
+        PtrInit::init(Box::new(MaybeUninit::uninit()).into(), init)
     }
 }
 
@@ -725,7 +725,7 @@ impl<T> PtrPinWith<T> for UniqueRc<T> {
     where
         I: Init<T, E>,
     {
-        PtrInit::init(UniqueRc::new_uninit().into(), init)
+        PtrInit::init(UniqueRc::new(MaybeUninit::uninit()).into(), init)
     }
 }
 
@@ -737,7 +737,7 @@ impl<T> PtrPinWith<T> for UniqueArc<T> {
     where
         I: Init<T, E>,
     {
-        PtrInit::init(UniqueArc::new_uninit().into(), init)
+        PtrInit::init(UniqueArc::new(MaybeUninit::uninit()).into(), init)
     }
 }
 

@@ -28,12 +28,6 @@ impl<T> UniqueRc<T> {
     pub fn shareable_pin(x: Pin<Self>) -> Pin<Rc<T>> {
         unsafe { Pin::new_unchecked(Pin::into_inner_unchecked(x).0) }
     }
-
-    /// Constructs a new `UniqueRc` with uninitialized contents.
-    #[inline]
-    pub fn new_uninit() -> UniqueRc<MaybeUninit<T>> {
-        UniqueRc::new(MaybeUninit::uninit())
-    }
 }
 
 impl<T> UniqueRc<MaybeUninit<T>> {
@@ -98,12 +92,6 @@ impl<T> UniqueArc<T> {
     #[inline]
     pub fn shareable_pin(x: Pin<Self>) -> Pin<Arc<T>> {
         unsafe { Pin::new_unchecked(Pin::into_inner_unchecked(x).0) }
-    }
-
-    /// Constructs a new `UniqueArc` with uninitialized contents.
-    #[inline]
-    pub fn new_uninit() -> UniqueArc<MaybeUninit<T>> {
-        UniqueArc::new(MaybeUninit::uninit())
     }
 }
 
