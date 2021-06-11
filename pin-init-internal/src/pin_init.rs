@@ -430,7 +430,7 @@ impl VisitMut for InitPinVisit {
                 }
 
                 *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
-                    ::pin_init::init_from_closure(|this| {
+                    ::pin_init::init_from_closure(move |this| {
                         use ::pin_init::Initable;
                         let builder = #path::__pin_init_builder(this);
                         Ok(builder.__init_ok())
@@ -466,7 +466,7 @@ impl VisitMut for InitPinVisit {
                 }
 
                 *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
-                    ::pin_init::init_from_closure(|this| {
+                    ::pin_init::init_from_closure(move |this| {
                         use ::pin_init::Initable;
                         let builder = #path::__pin_init_builder(this);
                         #(#builder_segment)*
@@ -500,7 +500,7 @@ impl VisitMut for InitPinVisit {
                 }
 
                 *expr = syn::parse2(quote_spanned! {Span::mixed_site()=>
-                    ::pin_init::init_from_closure(|this| {
+                    ::pin_init::init_from_closure(move |this| {
                         use ::pin_init::Initable;
                         let builder = #path::__pin_init_builder(this);
                         #(#builder_segment)*
