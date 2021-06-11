@@ -1,5 +1,7 @@
 use super::*;
 use core::ops::{Deref, DerefMut};
+#[cfg(feature = "alloc_try_pin_with")]
+use core::alloc::AllocError;
 
 /// An uniquely owned `Rc`.
 ///
@@ -12,9 +14,19 @@ pub struct UniqueRc<T: ?Sized>(Rc<T>);
 
 impl<T> UniqueRc<T> {
     /// Constructs a new `UniqueRc`.
+    #[cfg(feature = "alloc_pin_with")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_pin_with")))]
     #[inline]
     pub fn new(data: T) -> Self {
         UniqueRc(Rc::new(data))
+    }
+
+    /// Try to constructs a new `UniqueRc`.
+    #[cfg(feature = "alloc_try_pin_with")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_try_pin_with")))]
+    #[inline]
+    pub fn try_new(data: T) -> Result<Self, AllocError> {
+        Ok(UniqueRc(Rc::try_new(data)?))
     }
 
     /// Convert to a shareable [`Rc<T>`].
@@ -77,9 +89,19 @@ pub struct UniqueArc<T: ?Sized>(Arc<T>);
 
 impl<T> UniqueArc<T> {
     /// Constructs a new `UniqueArc`.
+    #[cfg(feature = "alloc_pin_with")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_pin_with")))]
     #[inline]
     pub fn new(data: T) -> Self {
         UniqueArc(Arc::new(data))
+    }
+
+    /// Try to constructs a new `UniqueArc`.
+    #[cfg(feature = "alloc_try_pin_with")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_try_pin_with")))]
+    #[inline]
+    pub fn try_new(data: T) -> Result<Self, AllocError> {
+        Ok(UniqueArc(Arc::try_new(data)?))
     }
 
     /// Convert to a shareable [`Arc<T>`].

@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(doc_cfg, feature(doc_cfg))]
+#![cfg_attr(feature = "alloc_try_pin_with", feature(allocator_api))]
 #![warn(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::new_without_default)]
 #![allow(clippy::should_implement_trait)]
@@ -340,6 +341,8 @@ use core::pin::Pin;
 
 #[cfg(feature = "alloc")]
 use alloc::{boxed::Box, rc::Rc, sync::Arc};
+#[cfg(feature = "alloc_try_pin_with")]
+use core::alloc::AllocError;
 #[cfg(feature = "alloc")]
 use core::{mem::ManuallyDrop, ops::Deref};
 
@@ -699,14 +702,16 @@ impl<T> PtrInit<T> for UniqueArc<T> {
 }
 
 /// Pointer types that can be pin-newed.
+#[cfg(feature = "alloc_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_pin_with")))]
 pub trait PtrPinWith<T>: Deref<Target = T> + Sized {
     fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
     where
         I: Init<T, E>;
 }
 
-#[cfg(feature = "alloc")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[cfg(feature = "alloc_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_pin_with")))]
 impl<T> PtrPinWith<T> for Box<T> {
     #[inline]
     fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
@@ -717,8 +722,8 @@ impl<T> PtrPinWith<T> for Box<T> {
     }
 }
 
-#[cfg(feature = "alloc")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[cfg(feature = "alloc_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_pin_with")))]
 impl<T> PtrPinWith<T> for UniqueRc<T> {
     #[inline]
     fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
@@ -729,8 +734,8 @@ impl<T> PtrPinWith<T> for UniqueRc<T> {
     }
 }
 
-#[cfg(feature = "alloc")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[cfg(feature = "alloc_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_pin_with")))]
 impl<T> PtrPinWith<T> for UniqueArc<T> {
     #[inline]
     fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
@@ -741,8 +746,8 @@ impl<T> PtrPinWith<T> for UniqueArc<T> {
     }
 }
 
-#[cfg(feature = "alloc")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[cfg(feature = "alloc_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_pin_with")))]
 impl<T> PtrPinWith<T> for Rc<T> {
     #[inline]
     fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
@@ -753,8 +758,8 @@ impl<T> PtrPinWith<T> for Rc<T> {
     }
 }
 
-#[cfg(feature = "alloc")]
-#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+#[cfg(feature = "alloc_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_pin_with")))]
 impl<T> PtrPinWith<T> for Arc<T> {
     #[inline]
     fn pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
@@ -762,6 +767,81 @@ impl<T> PtrPinWith<T> for Arc<T> {
         I: Init<T, E>,
     {
         Ok(UniqueArc::shareable_pin(UniqueArc::pin_with(init)?))
+    }
+}
+
+/// Pointer types that can be pin-newed.
+#[cfg(feature = "alloc_try_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_try_pin_with")))]
+pub trait PtrTryPinWith<T>: Deref<Target = T> + Sized {
+    fn try_pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+        E: From<AllocError>;
+}
+
+#[cfg(feature = "alloc_try_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_try_pin_with")))]
+impl<T> PtrTryPinWith<T> for Box<T> {
+    #[inline]
+    fn try_pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+        E: From<AllocError>,
+    {
+        PtrInit::init(Box::try_new(MaybeUninit::uninit())?.into(), init)
+    }
+}
+
+#[cfg(feature = "alloc_try_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_try_pin_with")))]
+impl<T> PtrTryPinWith<T> for UniqueRc<T> {
+    #[inline]
+    fn try_pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+        E: From<AllocError>,
+    {
+        PtrInit::init(UniqueRc::try_new(MaybeUninit::uninit())?.into(), init)
+    }
+}
+
+#[cfg(feature = "alloc_try_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_try_pin_with")))]
+impl<T> PtrTryPinWith<T> for UniqueArc<T> {
+    #[inline]
+    fn try_pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+        E: From<AllocError>,
+    {
+        PtrInit::init(UniqueArc::try_new(MaybeUninit::uninit())?.into(), init)
+    }
+}
+
+#[cfg(feature = "alloc_try_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_try_pin_with")))]
+impl<T> PtrTryPinWith<T> for Rc<T> {
+    #[inline]
+    fn try_pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+        E: From<AllocError>,
+    {
+        Ok(UniqueRc::shareable_pin(UniqueRc::try_pin_with(init)?))
+    }
+}
+
+#[cfg(feature = "alloc_try_pin_with")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc_try_pin_with")))]
+impl<T> PtrTryPinWith<T> for Arc<T> {
+    #[inline]
+    fn try_pin_with<E, I>(init: I) -> Result<Pin<Self>, E>
+    where
+        I: Init<T, E>,
+        E: From<AllocError>,
+    {
+        Ok(UniqueArc::shareable_pin(UniqueArc::try_pin_with(init)?))
     }
 }
 
@@ -938,6 +1018,7 @@ pub mod __private {
 macro_rules! init_stack {
     ($var:ident = $init:expr) => {
         let mut storage = $crate::__private::StackWrapper::new();
-        let $var = unsafe { Pin::new_unchecked(&mut storage) }.init($crate::init_pin!($init));
+        let $var =
+            unsafe { ::core::pin::Pin::new_unchecked(&mut storage) }.init($crate::init_pin!($init));
     };
 }

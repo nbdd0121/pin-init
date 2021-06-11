@@ -23,7 +23,9 @@ pin-project = "1"
 
 [features]
 alloc = []
-default = ["alloc"]
+alloc_pin_with = ["alloc"]
+alloc_try_pin_with = ["alloc"]
+default = ["alloc", "alloc_pin_with"]
 
 [package.metadata.docs.rs]
 all-features = true
