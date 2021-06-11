@@ -254,7 +254,7 @@ pub fn pin_init_derive(input: TokenStream) -> Result<TokenStream> {
                     let ptr = unsafe { ::core::ptr::addr_of_mut!((*base).#field_name_current) };
                     // SAFETY: We will act according to the return value of `f`.
                     let pin = unsafe { ::pin_init::PinUninit::new(&mut *(ptr as *mut ::core::mem::MaybeUninit<_>)) };
-                    match f.init(pin) {
+                    match f.__init(pin) {
                         Ok(_) => (),
                         Err(err) => return Err(self.__init_err(err.into_inner())),
                     }

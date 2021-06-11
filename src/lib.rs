@@ -445,7 +445,7 @@ impl<'a, T> PinUninit<'a, T> {
     where
         F: Init<T, E>,
     {
-        value.init(self)
+        value.__init(self)
     }
 
     /// Completes the initialization by moving the given value.
@@ -542,7 +542,7 @@ pub type InitResult<'a, T, E> = Result<InitOk<'a, T>, InitErr<'a, E>>;
 /// a non-pinned value can be used directly for pin-initialization.
 pub trait Init<T, E>: Sized {
     /// Pin-initialize `this`.
-    fn init<'a>(self, this: PinUninit<'a, T>) -> InitResult<'a, T, E>;
+    fn __init<'a>(self, this: PinUninit<'a, T>) -> InitResult<'a, T, E>;
 
     /// Maps the error from `E` to `E2`.
     fn map_err<E2, F>(self, f: F) -> MapErr<T, E, E2, Self, F>
@@ -558,7 +558,7 @@ pub trait Init<T, E>: Sized {
 }
 
 impl<T, E> Init<T, E> for T {
-    fn init<'a>(self, this: PinUninit<'a, T>) -> InitResult<'a, T, E> {
+    fn __init<'a>(self, this: PinUninit<'a, T>) -> InitResult<'a, T, E> {
         Ok(this.init_with_value(self))
     }
 }
@@ -576,8 +576,8 @@ where
     I: Init<T, E>,
     F: FnOnce(E) -> E2,
 {
-    fn init<'a>(self, this: PinUninit<'a, T>) -> InitResult<'a, T, E2> {
-        match self.init.init(this) {
+    fn __init<'a>(self, this: PinUninit<'a, T>) -> InitResult<'a, T, E2> {
+        match self.init.__init(this) {
             Ok(v) => Ok(v),
             Err(v) => Err(v.map(self.map)),
         }
@@ -605,7 +605,7 @@ where
     where
         F: for<'a> FnOnce(PinUninit<'a, T>) -> InitResult<'a, T, E>,
     {
-        fn init<'a>(self, this: PinUninit<'a, T>) -> InitResult<'a, T, E> {
+        fn __init<'a>(self, this: PinUninit<'a, T>) -> InitResult<'a, T, E> {
             (self.0)(this)
         }
     }
@@ -638,7 +638,7 @@ impl<T> PtrInit<T> for Box<T> {
         let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(uninit) });
         // SAFETY: pinning is guaranteed by `storage`'s pin guarantee.
         //         We will check the return value, and act accordingly.
-        match init.init(unsafe { PinUninit::new(&mut ptr) }) {
+        match init.__init(unsafe { PinUninit::new(&mut ptr) }) {
             Ok(_) => {
                 // SAFETY: We know it's initialized, and both `ManuallyDrop` and `Pin`
                 //         are `#[repr(transparent)]` so this is safe.
@@ -666,7 +666,7 @@ impl<T> PtrInit<T> for UniqueRc<T> {
     {
         // SAFETY: See `init_box`.
         let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(uninit) });
-        match init.init(unsafe { PinUninit::new(&mut ptr) }) {
+        match init.__init(unsafe { PinUninit::new(&mut ptr) }) {
             Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
             Err(err) => {
                 let err = err.into_inner();
@@ -690,7 +690,7 @@ impl<T> PtrInit<T> for UniqueArc<T> {
     {
         // SAFETY: See `init_box`.
         let mut ptr = ManuallyDrop::new(unsafe { Pin::into_inner_unchecked(uninit) });
-        match init.init(unsafe { PinUninit::new(&mut ptr) }) {
+        match init.__init(unsafe { PinUninit::new(&mut ptr) }) {
             Ok(_) => Ok(unsafe { mem::transmute(ptr) }),
             Err(err) => {
                 let err = err.into_inner();
@@ -895,7 +895,7 @@ pub mod __private {
             // cannot drop nor assume_init, and we cannot leak memory on stack. So
             // the only sensible action would be to abort (with double-panic).
             let g = PanicGuard;
-            let res = f.init(unsafe { PinUninit::new(&mut this.0) });
+            let res = f.__init(unsafe { PinUninit::new(&mut this.0) });
             mem::forget(g);
 
             match res {
@@ -975,7 +975,7 @@ pub mod __private {
         {
             // This is okay because we only deal with #[repr(transparent)] structs here.
             let ptr = self.0.get_mut().as_mut_ptr() as *mut MaybeUninit<T>;
-            match f.init(unsafe { PinUninit::new(&mut *ptr) }) {
+            match f.__init(unsafe { PinUninit::new(&mut *ptr) }) {
                 Ok(_) => Ok(ValueBuilder(unsafe { self.0.init_ok() })),
                 Err(err) => Err(self.0.init_err(err.into_inner())),
             }
