@@ -76,6 +76,10 @@ impl<T> From<UniqueRc<T>> for Pin<UniqueRc<T>> {
 // over the Rc's non-atomic reference counts.
 unsafe impl<T: Send> Send for UniqueRc<T> {}
 
+// SAFETY: The underlying `Rc` cannot be cloned or dropped while the `UniqueRc` exists, so
+// there is no possibility of data races over its non-atomic reference counts.
+unsafe impl<T: Sync> Sync for UniqueRc<T> {}
+
 /// An uniquely owned `Arc`.
 ///
 /// Useful for constructing `Arc`, since we are certain that when `Arc` is
