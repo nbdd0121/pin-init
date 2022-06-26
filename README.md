@@ -90,7 +90,7 @@ essentially a certificate about whether the type is initialized or not.
 `NeedPin` can now be easily initialized:
 ```rust
 // In a box
-let p: Pin<Box<NeedPin>> = pin_init::new_box(NeedPin::new()).unwrap();
+let p: Pin<Box<NeedPin>> = Box::pin_with(NeedPin::new()).unwrap();
 // On the stack
 init_stack!(p = NeedPin::new());
 let p: Pin<&mut NeedPin> = p.unwrap();
@@ -115,7 +115,7 @@ struct TooManyPin {
     #[pin]
     b: ManyPin,
 }
-let p = new_box(init_pin!(TooManyPin {
+let p = Box::pin_with(init_pin!(TooManyPin {
     a: NeedPin::new(),
     b: ManyPin {
         a: NeedPin::new(),
