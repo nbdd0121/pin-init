@@ -420,7 +420,7 @@ struct InitPinVisit(bool);
 impl VisitMut for InitPinVisit {
     fn visit_expr_mut(&mut self, expr: &mut Expr) {
         match expr {
-            Expr::Path(path) if looks_like_tuple_struct_name(&path) => {
+            Expr::Path(path) if looks_like_tuple_struct_name(path) => {
                 if let Some(v) = scan_attribute(&mut path.attrs) {
                     self.0 = v;
                 }
@@ -438,7 +438,7 @@ impl VisitMut for InitPinVisit {
                 })
                 .unwrap()
             }
-            Expr::Call(call) if looks_like_tuple_struct_call(&call) => {
+            Expr::Call(call) if looks_like_tuple_struct_call(call) => {
                 if let Some(v) = scan_attribute(&mut call.attrs) {
                     self.0 = v;
                 }
