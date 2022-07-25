@@ -536,6 +536,46 @@ impl<'a, E> InitErr<'a, E> {
 /// See documentation of [`PinUninit`] for details.
 pub type InitResult<'a, T, E> = Result<InitOk<'a, T>, InitErr<'a, E>>;
 
+/// A macro for `?` operator-like semantics.
+///
+/// ```
+/// # use pin_init::*;
+/// # use std::ptr;
+/// # struct NeedPin {
+/// #     address: *const NeedPin,
+/// #     _pinned: std::marker::PhantomPinned,
+/// # }
+/// # struct Error;
+/// # fn fallible_fn() -> Result<*const NeedPin, Error> {
+/// #     Err(Error)
+/// # }
+/// impl NeedPin {
+///     pub fn new() -> impl Init<Self, Error> {
+///         init_from_closure(|mut this: PinUninit<'_, Self>| {
+///             let v = this.get_mut().as_mut_ptr();
+///             unsafe {
+///                 let address = ptr::addr_of_mut!((*v).address);
+///                 *address = unwrap_or_return_uninit!(this, fallible_fn())
+///             };
+///             Ok(unsafe { this.init_ok() })
+///         })
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! unwrap_or_return_uninit {
+    ($pin_uninit:expr, $expr:expr) => {
+        match $expr {
+            ::std::result::Result::Ok(val) => val,
+            ::std::result::Result::Err(err) => {
+                return ::std::result::Result::Err(
+                    $pin_uninit.init_err(::std::convert::From::from(err)),
+                )
+            }
+        }
+    };
+}
+
 /// Initializer that can be used to safely pin-initialize `T`.
 ///
 /// A blanket implementation `impl<T, E> Init<T, E> for T` is provided for all types, so
