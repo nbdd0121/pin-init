@@ -1,7 +1,7 @@
 use super::*;
-use core::ops::{Deref, DerefMut};
 #[cfg(feature = "alloc_try_pin_with")]
 use core::alloc::AllocError;
+use core::ops::{Deref, DerefMut};
 
 /// An uniquely owned `Rc`.
 ///
