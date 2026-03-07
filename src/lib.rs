@@ -993,6 +993,19 @@ pub mod __private {
 /// # }
 /// ```
 ///
+/// Surround the pin-initialization with brackets to access the result
+/// before assigning to the variable:
+/// ```
+/// # include!("doctest.rs");
+/// # fn main() -> Result<(), Infallible> {
+/// init_stack!(p = (NeedPin::new()).unwrap());
+/// // Now `p` is a `Pin<&mut NeedPin>`.
+/// init_stack!(p = (NeedPin::new())?);
+/// // Similarity, `p` is a `Pin<&mut NeedPin>`.
+/// # Ok(())
+/// # }
+/// ```
+///
 /// Can be used together with [`init_pin!`]:
 /// ```
 /// # include!("doctest.rs");
@@ -1016,6 +1029,11 @@ pub mod __private {
 /// be kept, this macro will abort the process.
 #[macro_export]
 macro_rules! init_stack {
+    ($var:ident = ($init:expr)$( $access:tt )*) => {
+        let mut storage = $crate::__private::StackWrapper::new();
+        let $var =
+            unsafe { ::core::pin::Pin::new_unchecked(&mut storage) }.init($crate::init_pin!($init))$( $access )*;
+    };
     ($var:ident = $init:expr) => {
         let mut storage = $crate::__private::StackWrapper::new();
         let $var =
