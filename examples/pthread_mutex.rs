@@ -89,7 +89,10 @@ struct Mutex<T> {
 unsafe impl<T: Send> Send for Mutex<T> {}
 unsafe impl<T: Send> Sync for Mutex<T> {}
 
-struct MutexGuard<'a, T>(RawMutexGuard<'a>, &'a mut T);
+struct MutexGuard<'a, T>(
+    #[allow(dead_code)]
+    RawMutexGuard<'a>,
+    &'a mut T);
 
 impl<'a, T> Deref for MutexGuard<'a, T> {
     type Target = T;

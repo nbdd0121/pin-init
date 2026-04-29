@@ -10,7 +10,7 @@ Internal implementation details of crate `pin_init`.
 """
 
 [lib]
-proc_macro = true
+proc-macro = true
 
 [dependencies]
 syn = { version = "2.0", features = ["full", "visit", "visit-mut"] }
